@@ -13,8 +13,13 @@ This test sets up EVERYTHING from scratch:
 - Cleans up
 
 No pre-existing state required. Just run it.
+
+Usage:
+  python3 scripts/integration_test.py                # Run against testnet (default)
+  python3 scripts/integration_test.py --network local  # Run against local network
 """
 
+import argparse
 import asyncio
 import hashlib
 import os
@@ -44,11 +49,42 @@ sys.path.insert(0, "/Users/tomer/dev/lumendark/backend")
 
 from lumendark_client import LumenDarkClient
 
-# Constants
-HORIZON_URL = "https://horizon-testnet.stellar.org"
-SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org"
-FRIENDBOT_URL = "https://friendbot.stellar.org"
-NETWORK_PASSPHRASE = Network.TESTNET_NETWORK_PASSPHRASE
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+
+@dataclass
+class NetworkConfig:
+    """Network-specific configuration."""
+    name: str
+    horizon_url: str
+    soroban_rpc_url: str
+    friendbot_url: str
+    network_passphrase: str
+
+
+NETWORKS = {
+    "testnet": NetworkConfig(
+        name="testnet",
+        horizon_url="https://horizon-testnet.stellar.org",
+        soroban_rpc_url="https://soroban-testnet.stellar.org",
+        friendbot_url="https://friendbot.stellar.org",
+        network_passphrase=Network.TESTNET_NETWORK_PASSPHRASE,
+    ),
+    "local": NetworkConfig(
+        name="local",
+        horizon_url="http://localhost:8000",
+        soroban_rpc_url="http://localhost:8000/soroban/rpc",
+        friendbot_url="http://localhost:8000/friendbot",
+        network_passphrase="Standalone Network ; February 2017",
+    ),
+}
+
+# Global network config - set by parse_args()
+NETWORK: NetworkConfig = NETWORKS["testnet"]
+
+# API server configuration
 API_PORT = 8765  # Use a different port to avoid conflicts
 API_BASE_URL = f"http://localhost:{API_PORT}"
 
@@ -163,7 +199,7 @@ async def fund_account(address: str) -> bool:
     async with httpx.AsyncClient(timeout=120) as client:
         for attempt in range(3):
             try:
-                response = await client.get(f"{FRIENDBOT_URL}?addr={address}")
+                response = await client.get(f"{NETWORK.friendbot_url}?addr={address}")
                 if response.status_code == 200:
                     return True
                 # Account already funded is also OK
@@ -237,7 +273,7 @@ def deploy_sac_token(
     # Build transaction to deploy SAC
     builder = TransactionBuilder(
         source_account=account,
-        network_passphrase=NETWORK_PASSPHRASE,
+        network_passphrase=NETWORK.network_passphrase,
         base_fee=100,
     )
 
@@ -254,7 +290,7 @@ def deploy_sac_token(
     submit_soroban_tx(server, tx, issuer, f"SAC deploy {asset_code}")
 
     # The contract address is derived from the asset
-    contract_id = asset.contract_id(NETWORK_PASSPHRASE)
+    contract_id = asset.contract_id(NETWORK.network_passphrase)
     print(f"    {asset_code} SAC deployed: {contract_id}")
     return contract_id
 
@@ -273,7 +309,7 @@ def establish_trustline(
 
     builder = TransactionBuilder(
         source_account=account,
-        network_passphrase=NETWORK_PASSPHRASE,
+        network_passphrase=NETWORK.network_passphrase,
         base_fee=100,
     )
 
@@ -303,7 +339,7 @@ def mint_tokens(
 
     builder = TransactionBuilder(
         source_account=account,
-        network_passphrase=NETWORK_PASSPHRASE,
+        network_passphrase=NETWORK.network_passphrase,
         base_fee=100,
     )
 
@@ -354,7 +390,7 @@ def deploy_orderbook_contract(
 
     builder = TransactionBuilder(
         source_account=account,
-        network_passphrase=NETWORK_PASSPHRASE,
+        network_passphrase=NETWORK.network_passphrase,
         base_fee=100,
     )
     builder.append_upload_contract_wasm_op(contract=wasm_bytes)
@@ -370,7 +406,7 @@ def deploy_orderbook_contract(
 
     builder = TransactionBuilder(
         source_account=account,
-        network_passphrase=NETWORK_PASSPHRASE,
+        network_passphrase=NETWORK.network_passphrase,
         base_fee=100,
     )
 
@@ -414,7 +450,7 @@ def deploy_orderbook_contract(
 
     builder = TransactionBuilder(
         source_account=account,
-        network_passphrase=NETWORK_PASSPHRASE,
+        network_passphrase=NETWORK.network_passphrase,
         base_fee=100,
     )
 
@@ -439,8 +475,8 @@ async def setup_contracts(accounts: TestAccounts) -> DeployedContracts:
     """Deploy all contracts and mint initial tokens."""
     print("\n--- Deploying Contracts ---")
 
-    server = SorobanServer(SOROBAN_RPC_URL)
-    horizon = Server(HORIZON_URL)
+    server = SorobanServer(NETWORK.soroban_rpc_url)
+    horizon = Server(NETWORK.horizon_url)
 
     # Deploy token contracts (SAC)
     token_a_contract = deploy_sac_token(server, horizon, accounts.token_issuer, "TOKA")
@@ -493,7 +529,8 @@ def start_backend_server(admin_secret: str, orderbook_contract: str) -> subproce
     env = os.environ.copy()
     env["ADMIN_SECRET_KEY"] = admin_secret
     env["ORDERBOOK_CONTRACT_ID"] = orderbook_contract
-    env["SOROBAN_RPC_URL"] = SOROBAN_RPC_URL
+    env["SOROBAN_RPC_URL"] = NETWORK.soroban_rpc_url
+    env["NETWORK_PASSPHRASE"] = NETWORK.network_passphrase
     env["PYTHONPATH"] = str(PROJECT_ROOT / "backend")
 
     cmd = [
@@ -555,7 +592,7 @@ def deposit_to_orderbook(
 
     builder = TransactionBuilder(
         source_account=account,
-        network_passphrase=NETWORK_PASSPHRASE,
+        network_passphrase=NETWORK.network_passphrase,
         base_fee=100,
     )
 
@@ -586,8 +623,8 @@ async def setup_deposits(
     """Make initial deposits to the orderbook."""
     print("\n--- Making Deposits to Orderbook ---")
 
-    server = SorobanServer(SOROBAN_RPC_URL)
-    horizon = Server(HORIZON_URL)
+    server = SorobanServer(NETWORK.soroban_rpc_url)
+    horizon = Server(NETWORK.horizon_url)
 
     # First, users need to authorize the orderbook to transfer their tokens
     # This is done implicitly when deposit() is called with require_auth
@@ -848,9 +885,37 @@ async def test_insufficient_balance(results: TestResult, user1_client: LumenDark
 # MAIN
 # =============================================================================
 
+def parse_args():
+    """Parse command line arguments."""
+    global NETWORK
+
+    parser = argparse.ArgumentParser(
+        description="Lumen Dark integration test",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 scripts/integration_test.py              # Run against testnet (default)
+  python3 scripts/integration_test.py --network local  # Run against local network
+        """,
+    )
+    parser.add_argument(
+        "--network",
+        choices=list(NETWORKS.keys()),
+        default="testnet",
+        help="Network to run tests against (default: testnet)",
+    )
+
+    args = parser.parse_args()
+    NETWORK = NETWORKS[args.network]
+    return args
+
+
 async def main():
+    args = parse_args()
+
     print("=" * 60)
     print("LUMEN DARK SELF-CONTAINED INTEGRATION TEST")
+    print(f"Network: {NETWORK.name.upper()}")
     print("=" * 60)
     print("\nThis test creates everything from scratch - no prerequisites needed.")
     print(f"\nTip: To watch server logs in another terminal, run:")

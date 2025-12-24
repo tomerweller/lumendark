@@ -259,11 +259,21 @@ cargo test
 
 ### Integration Test
 
-A fully self-contained end-to-end integration test is available that requires **zero prerequisites** - it creates everything from scratch on Stellar Testnet:
+A fully self-contained end-to-end integration test is available that requires **zero prerequisites** - it creates everything from scratch:
 
 ```bash
 cd backend
+
+# Run against Stellar Testnet (default)
 python3 scripts/integration_test.py
+
+# Run against local Stellar network (faster, requires stellar container)
+python3 scripts/integration_test.py --network local
+```
+
+To start a local Stellar network for testing:
+```bash
+stellar container start local --docker-host unix:///path/to/docker.sock
 ```
 
 **What the integration test does:**
