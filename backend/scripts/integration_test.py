@@ -223,13 +223,13 @@ async def test_order_placement_and_matching(results: TestResult, user1_client: L
         # Wait for processing
         await asyncio.sleep(2)
 
-        # Check status
+        # Check status (StatusResponse is a dataclass)
         status = await user1_client.get_status(sell_msg_id)
-        if status.get("status") == "ACCEPTED":
-            order_id = status.get("order_id")
+        if status.is_accepted:
+            order_id = status.order_id
             results.success(f"User1 SELL order accepted (order_id: {order_id})")
         else:
-            results.failure("User1 SELL order status", f"Expected ACCEPTED, got {status}")
+            results.failure("User1 SELL order status", f"Expected accepted, got {status.status}")
 
     except Exception as e:
         results.failure("User1 SELL order", str(e))
@@ -250,10 +250,10 @@ async def test_order_placement_and_matching(results: TestResult, user1_client: L
         await asyncio.sleep(15)  # Allow time for settlement
 
         status = await user2_client.get_status(buy_msg_id)
-        if status.get("status") == "ACCEPTED":
+        if status.is_accepted:
             results.success(f"User2 BUY order matched")
         else:
-            results.failure("User2 BUY order status", f"Got {status}")
+            results.failure("User2 BUY order status", f"Got {status.status}")
 
     except Exception as e:
         results.failure("User2 BUY order", str(e))
@@ -275,9 +275,9 @@ async def test_order_cancellation(results: TestResult, user1_client: LumenDarkCl
         )
         await asyncio.sleep(2)
 
-        # Get order_id
+        # Get order_id (StatusResponse is a dataclass)
         status = await user1_client.get_status(msg_id)
-        order_id = status.get("order_id")
+        order_id = status.order_id
 
         if not order_id:
             results.failure("Order cancellation setup", "No order_id returned")
@@ -291,10 +291,10 @@ async def test_order_cancellation(results: TestResult, user1_client: LumenDarkCl
         await asyncio.sleep(2)
 
         cancel_status = await user1_client.get_status(cancel_msg_id)
-        if cancel_status.get("status") == "ACCEPTED":
+        if cancel_status.is_accepted:
             results.success("Order cancelled successfully")
         else:
-            results.failure("Order cancellation", f"Got {cancel_status}")
+            results.failure("Order cancellation", f"Got {cancel_status.status}")
 
     except Exception as e:
         results.failure("Order cancellation", str(e))
@@ -325,12 +325,12 @@ async def test_withdrawal(results: TestResult, user1_client: LumenDarkClient):
         print("  Waiting for on-chain withdrawal...")
         await asyncio.sleep(20)
 
-        # Check status
+        # Check status (StatusResponse is a dataclass)
         status = await user1_client.get_status(msg_id)
-        if status.get("status") == "ACCEPTED":
+        if status.is_accepted:
             results.success("Withdrawal accepted")
         else:
-            results.failure("Withdrawal status", f"Got {status}")
+            results.failure("Withdrawal status", f"Got {status.status}")
 
         # Verify on-chain balance decreased
         new_balance = check_balance("user1", "a")
@@ -360,11 +360,11 @@ async def test_multiple_orders_stress(results: TestResult, user1_client: LumenDa
 
         await asyncio.sleep(3)
 
-        # Check all orders accepted
+        # Check all orders accepted (StatusResponse is a dataclass)
         accepted = 0
         for msg_id in sell_orders:
             status = await user1_client.get_status(msg_id)
-            if status.get("status") == "ACCEPTED":
+            if status.is_accepted:
                 accepted += 1
 
         if accepted == len(sell_orders):
@@ -387,10 +387,10 @@ async def test_multiple_orders_stress(results: TestResult, user1_client: LumenDa
         await asyncio.sleep(15)
 
         status = await user2_client.get_status(msg_id)
-        if status.get("status") == "ACCEPTED":
+        if status.is_accepted:
             results.success("Partial fill BUY order processed")
         else:
-            results.failure("Partial fill BUY order", f"Got {status}")
+            results.failure("Partial fill BUY order", f"Got {status.status}")
 
     except Exception as e:
         results.failure("Partial fill BUY order", str(e))
@@ -411,12 +411,13 @@ async def test_insufficient_balance(results: TestResult, user1_client: LumenDark
 
         await asyncio.sleep(2)
 
+        # StatusResponse is a dataclass
         status = await user1_client.get_status(msg_id)
-        if status.get("status") == "REJECTED":
+        if status.is_rejected:
             results.success("Order correctly rejected for insufficient balance")
         else:
             # May be accepted if user has huge balance, that's ok too
-            results.success(f"Order processed with status: {status.get('status')}")
+            results.success(f"Order processed with status: {status.status}")
 
     except Exception as e:
         # Rejection is expected
