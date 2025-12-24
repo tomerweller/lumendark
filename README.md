@@ -26,24 +26,29 @@ flowchart TB
 
     subgraph Backend
         API[HTTP API]
+        MsgQueue[[Message Queue]]
         Handler[Message Handler]
         Balances[(Balances)]
         OrderBook[(Order Book)]
+        ActQueue[[Action Queue]]
         Actions[Action Handler]
         Events[Event Listener]
     end
 
     %% Deposit flow
-    U1 -->|"1. deposit()"| Contract
-    Contract -.->|"2. emit event"| Events
-    Events -->|"3. credit balance"| Handler
+    U1 -->|"deposit()"| Contract
+    Contract -.->|"emit event"| Events
+    Events -->|"queue deposit"| MsgQueue
 
     %% Order flow
     U1 -->|"POST /orders"| API
-    API --> |"orders/cancels/withdraws"| Handler
+    U1 -->|"POST /orders/cancel"| API
+    API -->|"queue orders, cancels, withdrawals"| MsgQueue
+    MsgQueue -.-> Handler
     Handler --> Balances
     Handler --> OrderBook
-    Handler --> Actions
+    Handler -->|"queue settle, withdraw"| ActQueue
+    ActQueue -.-> Actions
 
     %% Settlement flow
     Actions -->|"settle() / withdraw()"| Contract
