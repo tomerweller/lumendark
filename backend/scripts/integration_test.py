@@ -170,10 +170,10 @@ async def fund_account(address: str) -> bool:
                     return True
             except Exception as e:
                 if attempt < 2:
-                    print(f"    Friendbot retry for {address[:8]}... (attempt {attempt+2})")
+                    print(f"    Friendbot retry for {address} (attempt {attempt+2})")
                     await asyncio.sleep(2)
                 else:
-                    print(f"    Warning: Friendbot error for {address[:8]}...: {e}")
+                    print(f"    Warning: Friendbot error for {address}: {e}")
                     return False
         return False
 
@@ -189,10 +189,10 @@ async def create_and_fund_accounts() -> TestAccounts:
         user2=Keypair.random(),
     )
 
-    print(f"  Admin: {accounts.admin.public_key[:16]}...")
-    print(f"  Token Issuer: {accounts.token_issuer.public_key[:16]}...")
-    print(f"  User1: {accounts.user1.public_key[:16]}...")
-    print(f"  User2: {accounts.user2.public_key[:16]}...")
+    print(f"  Admin: {accounts.admin.public_key}")
+    print(f"  Token Issuer: {accounts.token_issuer.public_key}")
+    print(f"  User1: {accounts.user1.public_key}")
+    print(f"  User2: {accounts.user2.public_key}")
 
     # Fund all accounts in parallel
     print("  Funding accounts via Friendbot...")
@@ -254,7 +254,7 @@ def deploy_sac_token(
 
     # The contract address is derived from the asset
     contract_id = asset.contract_id(NETWORK_PASSPHRASE)
-    print(f"    {asset_code} SAC deployed: {contract_id[:16]}...")
+    print(f"    {asset_code} SAC deployed: {contract_id}")
     return contract_id
 
 
@@ -265,7 +265,7 @@ def establish_trustline(
     issuer_public_key: str,
 ) -> None:
     """Establish a trustline from user to asset."""
-    print(f"    Establishing trustline for {asset_code} to {user.public_key[:12]}...")
+    print(f"    Establishing trustline for {asset_code} to {user.public_key}")
 
     account = horizon.load_account(user.public_key)
     asset = Asset(asset_code, issuer_public_key)
@@ -296,7 +296,7 @@ def mint_tokens(
     amount: int,
 ) -> None:
     """Mint tokens to an address using the SAC mint function."""
-    print(f"    Minting {amount // 10**7} tokens to {to_address[:12]}...")
+    print(f"    Minting {amount // 10**7} tokens to {to_address}")
 
     account = horizon.load_account(issuer.public_key)
 
@@ -319,7 +319,7 @@ def mint_tokens(
     builder.set_timeout(30)
     tx = builder.build()
 
-    submit_soroban_tx(server, tx, issuer, f"Mint to {to_address[:8]}")
+    submit_soroban_tx(server, tx, issuer, f"Mint to {to_address}")
 
 
 # =============================================================================
@@ -345,7 +345,7 @@ def deploy_orderbook_contract(
 
     wasm_bytes = ORDERBOOK_WASM.read_bytes()
     wasm_hash = hashlib.sha256(wasm_bytes).digest()  # bytes, not hex
-    print(f"    WASM hash: {wasm_hash.hex()[:16]}...")
+    print(f"    WASM hash: {wasm_hash.hex()}")
 
     # Step 1: Upload WASM
     print("    Uploading WASM...")
@@ -405,7 +405,7 @@ def deploy_orderbook_contract(
     addr = return_val.address
     contract_bytes = bytes(addr.contract_id.contract_id.hash)
     contract_id = StrKey.encode_contract(contract_bytes)
-    print(f"    Orderbook deployed: {contract_id[:16]}...")
+    print(f"    Orderbook deployed: {contract_id}")
 
     # Step 3: Verify the contract is initialized by calling get_admin
     print("    Verifying contract initialization...")
@@ -544,7 +544,7 @@ def deposit_to_orderbook(
     amount: int,
 ) -> None:
     """Deposit tokens to the orderbook contract."""
-    print(f"  Depositing {amount // 10**7} Token {asset.upper()} for {user.public_key[:12]}...")
+    print(f"  Depositing {amount // 10**7} Token {asset.upper()} for {user.public_key}")
 
     account = horizon.load_account(user.public_key)
 
@@ -634,7 +634,7 @@ async def test_order_placement(
             price="5",
             quantity="100",
         )
-        results.success(f"User1 SELL order submitted (msg_id: {sell_msg_id[:8]}...)")
+        results.success(f"User1 SELL order submitted (msg_id: {sell_msg_id})")
 
         await asyncio.sleep(2)
 
@@ -656,7 +656,7 @@ async def test_order_placement(
             price="5",
             quantity="50",
         )
-        results.success(f"User2 BUY order submitted (msg_id: {buy_msg_id[:8]}...)")
+        results.success(f"User2 BUY order submitted (msg_id: {buy_msg_id})")
 
         # Wait for matching and settlement
         print("  Waiting for order matching and settlement...")
@@ -733,7 +733,7 @@ async def test_withdrawal(results: TestResult, user1_client: LumenDarkClient):
             asset="a",
             amount=str(withdraw_amount),
         )
-        results.success(f"Withdrawal requested (msg_id: {msg_id[:8]}...)")
+        results.success(f"Withdrawal requested (msg_id: {msg_id})")
 
         # Wait for on-chain withdrawal
         print("  Waiting for on-chain withdrawal...")
