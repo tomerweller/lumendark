@@ -7,7 +7,7 @@ from typing import Optional, Callable, Awaitable, Any
 from stellar_sdk import scval, Address
 
 from lumendark.blockchain.client import SorobanClient
-from lumendark.models.message import IncomingMessage
+from lumendark.models.message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -112,14 +112,14 @@ class DepositEventListener:
     """
     Listens for deposit events on the orderbook contract.
 
-    Polls the Soroban RPC for new events and creates IncomingMessage
-    objects for processing by the MainExecutor.
+    Polls the Soroban RPC for new events and creates Message
+    objects for processing by the MessageHandler.
     """
 
     def __init__(
         self,
         client: SorobanClient,
-        on_deposit: Callable[[IncomingMessage], Awaitable[None]],
+        on_deposit: Callable[[Message], Awaitable[None]],
         poll_interval: float = 5.0,
         start_ledger: Optional[int] = None,
     ) -> None:
@@ -197,8 +197,8 @@ class DepositEventListener:
                 if deposit_data is None:
                     continue
 
-                # Create incoming message
-                message = IncomingMessage.create_deposit(
+                # Create message
+                message = Message.create_deposit(
                     user_address=deposit_data["user_address"],
                     asset=deposit_data["asset"],
                     amount=deposit_data["amount"],

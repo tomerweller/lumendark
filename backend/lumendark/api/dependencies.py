@@ -5,7 +5,7 @@ from typing import Optional
 from lumendark.storage.user_store import UserStore
 from lumendark.storage.order_book import OrderBook
 from lumendark.storage.message_store import MessageStore
-from lumendark.queues.incoming import IncomingQueue
+from lumendark.queues.message_queue import MessageQueue
 
 
 class AppState:
@@ -19,7 +19,7 @@ class AppState:
         self.user_store: Optional[UserStore] = None
         self.order_book: Optional[OrderBook] = None
         self.message_store: Optional[MessageStore] = None
-        self.incoming_queue: Optional[IncomingQueue] = None
+        self.message_queue: Optional[MessageQueue] = None
 
 
 # Global app state instance
@@ -52,8 +52,8 @@ def get_message_store() -> MessageStore:
     return _app_state.message_store
 
 
-def get_incoming_queue() -> IncomingQueue:
-    """FastAPI dependency for IncomingQueue."""
-    if _app_state.incoming_queue is None:
-        raise RuntimeError("IncomingQueue not initialized")
-    return _app_state.incoming_queue
+def get_message_queue() -> MessageQueue:
+    """FastAPI dependency for MessageQueue."""
+    if _app_state.message_queue is None:
+        raise RuntimeError("MessageQueue not initialized")
+    return _app_state.message_queue

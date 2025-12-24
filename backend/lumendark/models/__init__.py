@@ -2,11 +2,11 @@ from lumendark.models.order import Order, OrderSide, OrderStatus
 from lumendark.models.user import User, UserBalance
 from lumendark.models.trade import Trade
 from lumendark.models.message import (
-    IncomingMessage,
-    OutgoingMessage,
+    Message,
+    Action,
     MessageType,
     MessageStatus,
-    OutgoingType,
+    ActionType,
 )
 
 __all__ = [
@@ -16,9 +16,9 @@ __all__ = [
     "User",
     "UserBalance",
     "Trade",
-    "IncomingMessage",
-    "OutgoingMessage",
+    "Message",
+    "Action",
     "MessageType",
     "MessageStatus",
-    "OutgoingType",
+    "ActionType",
 ]

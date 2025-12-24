@@ -12,20 +12,20 @@ pub fn emit_deposit(env: &Env, user: &Address, asset: Asset, amount: i128) {
 }
 
 /// Emit a withdraw event
-/// Topics: ("withdraw", user)
-/// Data: (asset, amount)
-pub fn emit_withdraw(env: &Env, user: &Address, asset: Asset, amount: i128) {
-    let topics = (symbol_short!("withdraw"), user.clone());
-    let data = (asset, amount);
+/// Topics: ("withdraw", nonce)
+/// Data: (user, asset, amount)
+pub fn emit_withdraw(env: &Env, nonce: u64, user: &Address, asset: Asset, amount: i128) {
+    let topics = (symbol_short!("withdraw"), nonce);
+    let data = (user.clone(), asset, amount);
     env.events().publish(topics, data);
 }
 
 /// Emit a settle event for a trade
-/// Topics: ("settle", trade_id)
+/// Topics: ("settle", nonce)
 /// Data: (buyer, seller, asset_sold, amount_sold, asset_bought, amount_bought)
 pub fn emit_settle(
     env: &Env,
-    trade_id: u64,
+    nonce: u64,
     buyer: &Address,
     seller: &Address,
     asset_sold: Asset,
@@ -33,7 +33,7 @@ pub fn emit_settle(
     asset_bought: Asset,
     amount_bought: i128,
 ) {
-    let topics = (symbol_short!("settle"), trade_id);
+    let topics = (symbol_short!("settle"), nonce);
     let data = (
         buyer.clone(),
         seller.clone(),

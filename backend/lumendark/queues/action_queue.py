@@ -1,33 +1,33 @@
 import asyncio
 from typing import Optional
 
-from lumendark.models.message import OutgoingMessage
+from lumendark.models.message import Action
 
 
-class OutgoingQueue:
+class ActionQueue:
     """
-    Async queue for outgoing messages.
+    Async queue for blockchain actions.
 
     Trade settlements and withdrawals are queued here for submission
-    to the blockchain by the OutgoingProcessor.
+    to the blockchain by the ActionHandler.
     """
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[OutgoingMessage] = asyncio.Queue()
+        self._queue: asyncio.Queue[Action] = asyncio.Queue()
 
-    async def put(self, message: OutgoingMessage) -> None:
-        """Add a message to the queue."""
-        await self._queue.put(message)
+    async def put(self, action: Action) -> None:
+        """Add an action to the queue."""
+        await self._queue.put(action)
 
-    async def get(self, timeout: Optional[float] = None) -> Optional[OutgoingMessage]:
+    async def get(self, timeout: Optional[float] = None) -> Optional[Action]:
         """
-        Get a message from the queue.
+        Get an action from the queue.
 
         Args:
             timeout: Maximum time to wait in seconds. None for no timeout.
 
         Returns:
-            The message, or None if timeout expired.
+            The action, or None if timeout expired.
         """
         try:
             if timeout is None:

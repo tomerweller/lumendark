@@ -6,7 +6,7 @@ import uuid
 
 
 class MessageType(Enum):
-    """Types of incoming messages."""
+    """Types of messages from users/blockchain."""
 
     DEPOSIT = "deposit"  # From blockchain event listener
     ORDER = "order"  # New limit order
@@ -15,7 +15,7 @@ class MessageType(Enum):
 
 
 class MessageStatus(Enum):
-    """Processing status of a message."""
+    """Processing status of a message or action."""
 
     PENDING = "pending"  # Waiting in queue
     PROCESSING = "processing"  # Currently being processed
@@ -24,12 +24,12 @@ class MessageStatus(Enum):
 
 
 @dataclass
-class IncomingMessage:
+class Message:
     """
-    Message in the incoming queue.
+    Message from users or blockchain events.
 
     All user requests (orders, cancels, withdrawals) and blockchain events
-    (deposits) are represented as incoming messages.
+    (deposits) are represented as messages and processed by the MessageHandler.
     """
 
     id: str
@@ -52,9 +52,9 @@ class IncomingMessage:
         amount: str,
         ledger: int,
         tx_hash: str,
-    ) -> "IncomingMessage":
+    ) -> "Message":
         """Create a deposit message from a blockchain event."""
-        return IncomingMessage(
+        return Message(
             id=str(uuid.uuid4()),
             type=MessageType.DEPOSIT,
             user_address=user_address,
@@ -72,9 +72,9 @@ class IncomingMessage:
         side: str,
         price: str,
         quantity: str,
-    ) -> "IncomingMessage":
+    ) -> "Message":
         """Create an order message."""
-        return IncomingMessage(
+        return Message(
             id=str(uuid.uuid4()),
             type=MessageType.ORDER,
             user_address=user_address,
@@ -89,9 +89,9 @@ class IncomingMessage:
     def create_cancel(
         user_address: str,
         order_id: str,
-    ) -> "IncomingMessage":
+    ) -> "Message":
         """Create a cancel message."""
-        return IncomingMessage(
+        return Message(
             id=str(uuid.uuid4()),
             type=MessageType.CANCEL,
             user_address=user_address,
@@ -105,9 +105,9 @@ class IncomingMessage:
         user_address: str,
         asset: str,
         amount: str,
-    ) -> "IncomingMessage":
+    ) -> "Message":
         """Create a withdrawal message."""
-        return IncomingMessage(
+        return Message(
             id=str(uuid.uuid4()),
             type=MessageType.WITHDRAW,
             user_address=user_address,
@@ -129,23 +129,24 @@ class IncomingMessage:
         self.processed_at = datetime.now(timezone.utc)
 
 
-class OutgoingType(Enum):
-    """Types of outgoing messages (to blockchain)."""
+class ActionType(Enum):
+    """Types of actions to submit to the blockchain."""
 
     WITHDRAWAL = "withdrawal"
-    TRADE = "trade"
+    SETTLEMENT = "settlement"
 
 
 @dataclass
-class OutgoingMessage:
+class Action:
     """
-    Message in the outgoing queue.
+    Action to be submitted to the blockchain.
 
-    Represents actions that need to be submitted to the blockchain.
+    Trade settlements and withdrawals are queued as actions and
+    processed by the ActionHandler.
     """
 
     id: str
-    type: OutgoingType
+    type: ActionType
     payload: dict[str, Any]
     status: MessageStatus = MessageStatus.PENDING
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -156,11 +157,11 @@ class OutgoingMessage:
         user_address: str,
         asset: str,
         amount: str,
-    ) -> "OutgoingMessage":
-        """Create a withdrawal outgoing message."""
-        return OutgoingMessage(
+    ) -> "Action":
+        """Create a withdrawal action."""
+        return Action(
             id=str(uuid.uuid4()),
-            type=OutgoingType.WITHDRAWAL,
+            type=ActionType.WITHDRAWAL,
             payload={
                 "user": user_address,
                 "asset": asset,
@@ -169,17 +170,17 @@ class OutgoingMessage:
         )
 
     @staticmethod
-    def create_trade(
+    def create_settlement(
         trade_id: str,
         buyer_address: str,
         seller_address: str,
         amount_a: str,
         amount_b: str,
-    ) -> "OutgoingMessage":
-        """Create a trade settlement outgoing message."""
-        return OutgoingMessage(
+    ) -> "Action":
+        """Create a trade settlement action."""
+        return Action(
             id=str(uuid.uuid4()),
-            type=OutgoingType.TRADE,
+            type=ActionType.SETTLEMENT,
             payload={
                 "trade_id": trade_id,
                 "buyer": buyer_address,

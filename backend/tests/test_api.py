@@ -13,8 +13,8 @@ from lumendark.api.app import create_app
 from lumendark.storage.user_store import UserStore
 from lumendark.storage.order_book import OrderBook
 from lumendark.storage.message_store import MessageStore
-from lumendark.queues.incoming import IncomingQueue
-from lumendark.queues.outgoing import OutgoingQueue
+from lumendark.queues.message_queue import MessageQueue
+from lumendark.queues.action_queue import ActionQueue
 
 
 def sign_request(
@@ -56,13 +56,13 @@ def message_store() -> MessageStore:
 
 
 @pytest.fixture
-def incoming_queue() -> IncomingQueue:
-    return IncomingQueue()
+def message_queue() -> MessageQueue:
+    return MessageQueue()
 
 
 @pytest.fixture
-def outgoing_queue() -> OutgoingQueue:
-    return OutgoingQueue()
+def action_queue() -> ActionQueue:
+    return ActionQueue()
 
 
 @pytest.fixture
@@ -70,17 +70,17 @@ def app(
     user_store: UserStore,
     order_book: OrderBook,
     message_store: MessageStore,
-    incoming_queue: IncomingQueue,
-    outgoing_queue: OutgoingQueue,
+    message_queue: MessageQueue,
+    action_queue: ActionQueue,
 ):
-    """Create test app without running executor."""
+    """Create test app without running handlers."""
     return create_app(
         user_store=user_store,
         order_book=order_book,
         message_store=message_store,
-        incoming_queue=incoming_queue,
-        outgoing_queue=outgoing_queue,
-        run_executor=False,
+        message_queue=message_queue,
+        action_queue=action_queue,
+        run_handlers=False,
     )
 
 
@@ -133,7 +133,7 @@ class TestOrderEndpoints:
         self,
         client: TestClient,
         user_keypair: Keypair,
-        incoming_queue: IncomingQueue,
+        message_queue: MessageQueue,
         message_store: MessageStore,
     ) -> None:
         """Submit order should add message to queue and store."""
@@ -165,7 +165,7 @@ class TestOrderEndpoints:
         assert message.payload["quantity"] == "50"
 
         # Check message is in queue
-        assert not incoming_queue.empty
+        assert not message_queue.empty
 
     def test_submit_order_invalid_side_rejected(
         self,

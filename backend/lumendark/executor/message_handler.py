@@ -6,39 +6,39 @@ from typing import Optional
 from lumendark.models.order import Order, OrderSide
 from lumendark.models.trade import Trade
 from lumendark.models.message import (
-    IncomingMessage,
+    Message,
     MessageType,
     MessageStatus,
-    OutgoingMessage,
+    Action,
 )
 from lumendark.storage.user_store import UserStore
 from lumendark.storage.order_book import OrderBook
 from lumendark.storage.message_store import MessageStore
-from lumendark.queues.incoming import IncomingQueue
-from lumendark.queues.outgoing import OutgoingQueue
+from lumendark.queues.message_queue import MessageQueue
+from lumendark.queues.action_queue import ActionQueue
 from lumendark.matching.engine import MatchingEngine
 
 logger = logging.getLogger(__name__)
 
 
-class MainExecutor:
+class MessageHandler:
     """
-    Main processing loop for incoming messages.
+    Processes incoming messages from users and blockchain events.
 
-    Processes deposits, orders, cancels, and withdrawals sequentially.
-    Trades are output to the outgoing queue for settlement.
+    Handles deposits, orders, cancels, and withdrawals sequentially.
+    Trade settlements and withdrawals are queued as actions for the ActionHandler.
     """
 
     def __init__(
         self,
-        incoming_queue: IncomingQueue,
-        outgoing_queue: OutgoingQueue,
+        message_queue: MessageQueue,
+        action_queue: ActionQueue,
         user_store: UserStore,
         order_book: OrderBook,
         message_store: MessageStore,
     ) -> None:
-        self._incoming = incoming_queue
-        self._outgoing = outgoing_queue
+        self._messages_in = message_queue
+        self._actions = action_queue
         self._users = user_store
         self._order_book = order_book
         self._messages = message_store
@@ -46,29 +46,29 @@ class MainExecutor:
         self._running = False
 
     async def start(self) -> None:
-        """Start the executor loop."""
+        """Start the handler loop."""
         self._running = True
-        logger.info("MainExecutor started")
+        logger.info("MessageHandler started")
 
         while self._running:
             try:
-                message = await self._incoming.get(timeout=1.0)
+                message = await self._messages_in.get(timeout=1.0)
                 if message is not None:
                     await self._process_message(message)
-                    self._incoming.task_done()
+                    self._messages_in.task_done()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.exception(f"Error processing message: {e}")
 
-        logger.info("MainExecutor stopped")
+        logger.info("MessageHandler stopped")
 
     async def stop(self) -> None:
-        """Stop the executor loop."""
+        """Stop the handler loop."""
         self._running = False
 
-    async def _process_message(self, message: IncomingMessage) -> None:
-        """Process a single incoming message."""
+    async def _process_message(self, message: Message) -> None:
+        """Process a single message."""
         message.status = MessageStatus.PROCESSING
         self._messages.update(message)
 
@@ -89,7 +89,7 @@ class MainExecutor:
 
         self._messages.update(message)
 
-    async def _process_deposit(self, message: IncomingMessage) -> None:
+    async def _process_deposit(self, message: Message) -> None:
         """Process a deposit message from blockchain event."""
         asset = message.payload["asset"]
         try:
@@ -107,7 +107,7 @@ class MainExecutor:
 
         logger.info(f"Deposit processed: {message.user_address} +{amount} {asset}")
 
-    async def _process_order(self, message: IncomingMessage) -> None:
+    async def _process_order(self, message: Message) -> None:
         """Process a new order message."""
         # Parse order parameters
         try:
@@ -174,7 +174,7 @@ class MainExecutor:
         )
 
     async def _process_trade(self, trade: Trade, taker_side: OrderSide) -> None:
-        """Process a trade and queue settlement."""
+        """Process a trade and queue settlement action."""
         # Update liabilities for both parties
         # The taker's liability was already allocated when the order was placed
         # The maker's liability needs to be consumed
@@ -199,18 +199,18 @@ class MainExecutor:
             self._users.credit(trade.buyer_address, "a", trade.amount_a)
 
         # Queue trade for on-chain settlement
-        outgoing = OutgoingMessage.create_trade(
+        action = Action.create_settlement(
             trade_id=trade.id,
             buyer_address=trade.buyer_address,
             seller_address=trade.seller_address,
             amount_a=str(trade.amount_a),
             amount_b=str(trade.amount_b),
         )
-        await self._outgoing.put(outgoing)
+        await self._actions.put(action)
 
-        logger.debug(f"Trade queued: {trade.id}")
+        logger.debug(f"Settlement action queued: {trade.id}")
 
-    async def _process_cancel(self, message: IncomingMessage) -> None:
+    async def _process_cancel(self, message: Message) -> None:
         """Process an order cancellation."""
         order_id = message.payload.get("order_id")
         if not order_id:
@@ -245,7 +245,7 @@ class MainExecutor:
         message.accept()
         logger.info(f"Order cancelled: {order_id}")
 
-    async def _process_withdraw(self, message: IncomingMessage) -> None:
+    async def _process_withdraw(self, message: Message) -> None:
         """Process a withdrawal request."""
         asset = message.payload.get("asset")
         if asset not in ("a", "b"):
@@ -271,13 +271,13 @@ class MainExecutor:
         # Decrease available balance
         self._users.withdraw(message.user_address, asset, amount)
 
-        # Queue withdrawal for on-chain execution
-        outgoing = OutgoingMessage.create_withdrawal(
+        # Queue withdrawal action for on-chain execution
+        action = Action.create_withdrawal(
             user_address=message.user_address,
             asset=asset,
             amount=str(amount),
         )
-        await self._outgoing.put(outgoing)
+        await self._actions.put(action)
 
         message.accept()
-        logger.info(f"Withdrawal queued: {message.user_address} {amount} {asset}")
+        logger.info(f"Withdrawal action queued: {message.user_address} {amount} {asset}")

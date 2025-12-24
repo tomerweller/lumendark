@@ -12,6 +12,8 @@ pub enum DataKey {
     AssetB,
     /// User's balance for a specific asset: UserBalance(user_address, asset)
     UserBalance(Address, Asset),
+    /// Execution nonce for ensuring sequential execution order
+    Nonce,
 }
 
 /// Represents which asset we're referring to

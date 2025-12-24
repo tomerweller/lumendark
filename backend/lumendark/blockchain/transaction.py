@@ -42,6 +42,7 @@ class TransactionSubmitter:
 
     async def submit_withdrawal(
         self,
+        nonce: int,
         user: str,
         asset: str,
         amount: str,
@@ -50,6 +51,7 @@ class TransactionSubmitter:
         Submit a withdrawal transaction.
 
         Args:
+            nonce: Execution nonce for sequential ordering
             user: User's Stellar address
             asset: Asset symbol ("a" or "b")
             amount: Amount to withdraw (as string)
@@ -57,7 +59,7 @@ class TransactionSubmitter:
         Returns:
             Transaction hash
         """
-        logger.info(f"Submitting withdrawal: {user} {amount} {asset}")
+        logger.info(f"Submitting withdrawal: nonce={nonce} {user} {amount} {asset}")
 
         # Build the contract call
         from stellar_sdk import SorobanServer
@@ -76,10 +78,12 @@ class TransactionSubmitter:
         )
 
         # Add contract invocation for withdraw
+        # Contract signature: withdraw(nonce, user, asset, amount)
         builder.append_invoke_contract_function_op(
             contract_id=self._contract_id,
             function_name="withdraw",
             parameters=[
+                scval.to_uint64(nonce),  # nonce (first param)
                 scval.to_address(user),  # user address
                 self._asset_to_scval(asset),  # asset enum
                 scval.to_int128(int(amount)),  # amount
@@ -124,11 +128,11 @@ class TransactionSubmitter:
 
     async def submit_settlement(
         self,
+        nonce: int,
         buyer: str,
         seller: str,
         amount_a: str,
         amount_b: str,
-        trade_id: str,
     ) -> str:
         """
         Submit a settlement transaction for a trade.
@@ -138,17 +142,17 @@ class TransactionSubmitter:
         - Buyer paying asset B -> Seller
 
         Args:
+            nonce: Execution nonce for sequential ordering
             buyer: Buyer's Stellar address (receives A, pays B)
             seller: Seller's Stellar address (sells A, receives B)
             amount_a: Amount of asset A transferred (seller -> buyer)
             amount_b: Amount of asset B transferred (buyer -> seller)
-            trade_id: Unique trade identifier
 
         Returns:
             Transaction hash
         """
         logger.info(
-            f"Submitting settlement: {trade_id} "
+            f"Submitting settlement: nonce={nonce} "
             f"{seller} ->{amount_a}A-> {buyer}, "
             f"{buyer} ->{amount_b}B-> {seller}"
         )
@@ -168,20 +172,20 @@ class TransactionSubmitter:
         )
 
         # Contract signature:
-        # settle(buyer, seller, asset_sold, amount_sold, asset_bought, amount_bought, trade_id)
+        # settle(nonce, buyer, seller, asset_sold, amount_sold, asset_bought, amount_bought)
         # - asset_sold = A (what seller gives to buyer)
         # - asset_bought = B (what seller receives from buyer)
         builder.append_invoke_contract_function_op(
             contract_id=self._contract_id,
             function_name="settle",
             parameters=[
+                scval.to_uint64(nonce),  # nonce (first param)
                 scval.to_address(buyer),  # buyer address
                 scval.to_address(seller),  # seller address
                 self._asset_to_scval("a"),  # asset_sold = A
                 scval.to_int128(int(float(amount_a))),  # amount_sold
                 self._asset_to_scval("b"),  # asset_bought = B
                 scval.to_int128(int(float(amount_b))),  # amount_bought
-                scval.to_uint64(abs(hash(trade_id)) % (2**64)),  # trade_id as u64 (hash of UUID)
             ],
         )
 

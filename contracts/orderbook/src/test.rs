@@ -115,9 +115,9 @@ fn test_withdraw() {
     token::StellarAssetClient::new(&env, &token_a_addr).mint(&user, &amount);
     client.deposit(&user, &Asset::A, &amount);
 
-    // Withdraw half
+    // Withdraw half (nonce starts at 0)
     let withdraw_amount = amount / 2;
-    client.withdraw(&user, &Asset::A, &withdraw_amount);
+    client.withdraw(&0, &user, &Asset::A, &withdraw_amount);
 
     // Check balances
     assert_eq!(
@@ -142,7 +142,7 @@ fn test_withdraw_requires_admin_auth() {
     // Clear previous auths
     let _ = env.auths();
 
-    client.withdraw(&user, &Asset::A, &amount);
+    client.withdraw(&0, &user, &Asset::A, &amount);
 
     // Verify admin authorization was required (first auth in the list)
     let auths = env.auths();
@@ -164,7 +164,7 @@ fn test_withdraw_insufficient_balance_fails() {
     client.deposit(&user, &Asset::A, &amount);
 
     // Try to withdraw more than deposited
-    client.withdraw(&user, &Asset::A, &(amount + 1));
+    client.withdraw(&0, &user, &Asset::A, &(amount + 1));
 }
 
 #[test]
@@ -189,19 +189,18 @@ fn test_settle() {
     client.deposit(&buyer, &Asset::B, &buyer_b_amount);
     client.deposit(&seller, &Asset::A, &seller_a_amount);
 
-    // Trade: Seller sells 50 A to Buyer for 500 B
+    // Trade: Seller sells 50 A to Buyer for 500 B (nonce=0)
     let trade_a_amount: i128 = 50_0000000;
     let trade_b_amount: i128 = 500_0000000;
-    let trade_id: u64 = 1;
 
     client.settle(
+        &0,              // nonce
         &buyer,
         &seller,
         &Asset::A,       // asset_sold (A flows seller → buyer)
         &trade_a_amount, // amount_sold
         &Asset::B,       // asset_bought (B flows buyer → seller)
         &trade_b_amount, // amount_bought
-        &trade_id,
     );
 
     // Check buyer balances:
@@ -245,15 +244,7 @@ fn test_settle_requires_admin_auth() {
     // Clear previous auths
     let _ = env.auths();
 
-    client.settle(
-        &buyer,
-        &seller,
-        &Asset::A,
-        &50_0000000,
-        &Asset::B,
-        &500_0000000,
-        &1,
-    );
+    client.settle(&0, &buyer, &seller, &Asset::A, &50_0000000, &Asset::B, &500_0000000);
 
     // Verify admin authorization was required
     let auths = env.auths();
@@ -283,13 +274,13 @@ fn test_settle_seller_insufficient_balance_fails() {
 
     // Try to settle more A than seller has
     client.settle(
+        &0,  // nonce
         &buyer,
         &seller,
         &Asset::A,
         &(seller_a_amount + 1), // More than seller has
         &Asset::B,
         &500_0000000,
-        &1,
     );
 }
 
@@ -315,13 +306,13 @@ fn test_settle_buyer_insufficient_balance_fails() {
 
     // Try to settle more B than buyer has
     client.settle(
+        &0,  // nonce
         &buyer,
         &seller,
         &Asset::A,
         &50_0000000,
         &Asset::B,
         &(buyer_b_amount + 1), // More than buyer has
-        &1,
     );
 }
 
@@ -392,19 +383,27 @@ fn test_full_flow_deposit_trade_withdraw() {
     client.deposit(&alice, &Asset::A, &alice_a);
     client.deposit(&bob, &Asset::B, &bob_b);
 
-    // 2. Trade: Alice sells 50 A to Bob for 500 B
+    // Check initial nonce is 0
+    assert_eq!(client.get_nonce(), 0);
+
+    // 2. Trade: Alice sells 50 A to Bob for 500 B (nonce=0, increments to 1)
     let trade_a: i128 = 50_0000000;
     let trade_b: i128 = 500_0000000;
-    client.settle(&bob, &alice, &Asset::A, &trade_a, &Asset::B, &trade_b, &1);
+    client.settle(&0, &bob, &alice, &Asset::A, &trade_a, &Asset::B, &trade_b);
+    assert_eq!(client.get_nonce(), 1);
 
-    // 3. Withdrawals
+    // 3. Withdrawals (nonces: 1, 2, 3, 4)
     // Alice withdraws her remaining 50 A and her 500 B profit
-    client.withdraw(&alice, &Asset::A, &(alice_a - trade_a));
-    client.withdraw(&alice, &Asset::B, &trade_b);
+    client.withdraw(&1, &alice, &Asset::A, &(alice_a - trade_a));
+    assert_eq!(client.get_nonce(), 2);
+    client.withdraw(&2, &alice, &Asset::B, &trade_b);
+    assert_eq!(client.get_nonce(), 3);
 
     // Bob withdraws his 50 A and remaining 500 B
-    client.withdraw(&bob, &Asset::A, &trade_a);
-    client.withdraw(&bob, &Asset::B, &(bob_b - trade_b));
+    client.withdraw(&3, &bob, &Asset::A, &trade_a);
+    assert_eq!(client.get_nonce(), 4);
+    client.withdraw(&4, &bob, &Asset::B, &(bob_b - trade_b));
+    assert_eq!(client.get_nonce(), 5);
 
     // 4. Verify final token balances
     assert_eq!(token_a.balance(&alice), alice_a - trade_a); // 50 A
@@ -418,4 +417,45 @@ fn test_full_flow_deposit_trade_withdraw() {
     assert_eq!(client.get_balance(&alice, &Asset::B), 0);
     assert_eq!(client.get_balance(&bob, &Asset::A), 0);
     assert_eq!(client.get_balance(&bob, &Asset::B), 0);
+}
+
+#[test]
+#[should_panic(expected = "Invalid nonce")]
+fn test_settle_invalid_nonce_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, token_a_addr, token_b_addr) = create_orderbook(&env);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+
+    let buyer_b_amount: i128 = 1000_0000000;
+    let seller_a_amount: i128 = 100_0000000;
+
+    token::StellarAssetClient::new(&env, &token_b_addr).mint(&buyer, &buyer_b_amount);
+    token::StellarAssetClient::new(&env, &token_a_addr).mint(&seller, &seller_a_amount);
+
+    client.deposit(&buyer, &Asset::B, &buyer_b_amount);
+    client.deposit(&seller, &Asset::A, &seller_a_amount);
+
+    // Try to settle with wrong nonce (expected 0, providing 1)
+    client.settle(&1, &buyer, &seller, &Asset::A, &50_0000000, &Asset::B, &500_0000000);
+}
+
+#[test]
+#[should_panic(expected = "Invalid nonce")]
+fn test_withdraw_invalid_nonce_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, token_a_addr, _) = create_orderbook(&env);
+    let user = Address::generate(&env);
+    let amount: i128 = 1000_0000000;
+
+    token::StellarAssetClient::new(&env, &token_a_addr).mint(&user, &amount);
+    client.deposit(&user, &Asset::A, &amount);
+
+    // Try to withdraw with wrong nonce (expected 0, providing 5)
+    client.withdraw(&5, &user, &Asset::A, &amount);
 }

@@ -7,11 +7,11 @@ from pydantic import BaseModel, Field
 
 from lumendark.api.auth import verify_request_signature
 from lumendark.api.dependencies import (
-    get_incoming_queue,
+    get_message_queue,
     get_message_store,
 )
-from lumendark.models.message import IncomingMessage
-from lumendark.queues.incoming import IncomingQueue
+from lumendark.models.message import Message
+from lumendark.queues.message_queue import MessageQueue
 from lumendark.storage.message_store import MessageStore
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -47,19 +47,19 @@ class CancelResponse(BaseModel):
 async def submit_order(
     order: OrderRequest,
     user_address: str = Depends(verify_request_signature),
-    incoming_queue: IncomingQueue = Depends(get_incoming_queue),
+    message_queue: MessageQueue = Depends(get_message_queue),
     message_store: MessageStore = Depends(get_message_store),
 ) -> OrderResponse:
     """
     Submit a new limit order.
 
-    The order is placed in the incoming queue for processing.
+    The order is placed in the message queue for processing.
     Returns a message_id that can be used to track the order status.
     If the order is accepted and added to the book, the order_id will
     be available in the message status response.
     """
-    # Create incoming message
-    message = IncomingMessage.create_order(
+    # Create message
+    message = Message.create_order(
         user_address=user_address,
         side=order.side,
         price=order.price,
@@ -70,7 +70,7 @@ async def submit_order(
     message_store.add(message)
 
     # Queue for processing
-    await incoming_queue.put(message)
+    await message_queue.put(message)
 
     return OrderResponse(message_id=message.id)
 
@@ -79,17 +79,17 @@ async def submit_order(
 async def cancel_order(
     cancel: CancelRequest,
     user_address: str = Depends(verify_request_signature),
-    incoming_queue: IncomingQueue = Depends(get_incoming_queue),
+    message_queue: MessageQueue = Depends(get_message_queue),
     message_store: MessageStore = Depends(get_message_store),
 ) -> CancelResponse:
     """
     Cancel an existing order.
 
-    The cancel request is placed in the incoming queue for processing.
+    The cancel request is placed in the message queue for processing.
     Returns a message_id that can be used to track the cancel status.
     """
-    # Create incoming message
-    message = IncomingMessage.create_cancel(
+    # Create message
+    message = Message.create_cancel(
         user_address=user_address,
         order_id=cancel.order_id,
     )
@@ -98,6 +98,6 @@ async def cancel_order(
     message_store.add(message)
 
     # Queue for processing
-    await incoming_queue.put(message)
+    await message_queue.put(message)
 
     return CancelResponse(message_id=message.id)

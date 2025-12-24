@@ -5,11 +5,11 @@ from pydantic import BaseModel, Field
 
 from lumendark.api.auth import verify_request_signature
 from lumendark.api.dependencies import (
-    get_incoming_queue,
+    get_message_queue,
     get_message_store,
 )
-from lumendark.models.message import IncomingMessage
-from lumendark.queues.incoming import IncomingQueue
+from lumendark.models.message import Message
+from lumendark.queues.message_queue import MessageQueue
 from lumendark.storage.message_store import MessageStore
 
 router = APIRouter(prefix="/withdrawals", tags=["withdrawals"])
@@ -32,18 +32,18 @@ class WithdrawalResponse(BaseModel):
 async def request_withdrawal(
     withdrawal: WithdrawalRequest,
     user_address: str = Depends(verify_request_signature),
-    incoming_queue: IncomingQueue = Depends(get_incoming_queue),
+    message_queue: MessageQueue = Depends(get_message_queue),
     message_store: MessageStore = Depends(get_message_store),
 ) -> WithdrawalResponse:
     """
     Request a withdrawal.
 
-    The withdrawal request is placed in the incoming queue for processing.
+    The withdrawal request is placed in the message queue for processing.
     If approved, the funds will be transferred on-chain to the user's wallet.
     Returns a message_id that can be used to track the withdrawal status.
     """
-    # Create incoming message
-    message = IncomingMessage.create_withdraw(
+    # Create message
+    message = Message.create_withdraw(
         user_address=user_address,
         asset=withdrawal.asset,
         amount=withdrawal.amount,
@@ -53,6 +53,6 @@ async def request_withdrawal(
     message_store.add(message)
 
     # Queue for processing
-    await incoming_queue.put(message)
+    await message_queue.put(message)
 
     return WithdrawalResponse(message_id=message.id)

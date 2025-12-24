@@ -70,14 +70,15 @@ impl OrderBookContract {
     /// has no outstanding liabilities before requesting a withdrawal.
     ///
     /// # Arguments
+    /// * `nonce` - Execution nonce (must match current contract nonce)
     /// * `user` - The user withdrawing tokens
     /// * `asset` - Which asset to withdraw (A or B)
     /// * `amount` - Amount to withdraw (must be positive)
     ///
     /// # Panics
     /// Panics if amount is not positive, user has insufficient balance,
-    /// or admin doesn't authorize
-    pub fn withdraw(env: Env, user: Address, asset: Asset, amount: i128) {
+    /// nonce doesn't match, or admin doesn't authorize
+    pub fn withdraw(env: Env, nonce: u64, user: Address, asset: Asset, amount: i128) {
         // Admin must authorize withdrawals
         let admin = storage::get_admin(&env);
         admin.require_auth();
@@ -88,6 +89,9 @@ impl OrderBookContract {
 
         storage::extend_instance_ttl(&env);
 
+        // Validate nonce matches current value
+        storage::validate_nonce(&env, nonce);
+
         // Decrease user's balance (will panic if insufficient)
         storage::decrease_balance(&env, &user, asset, amount);
 
@@ -97,8 +101,11 @@ impl OrderBookContract {
         let contract_address = env.current_contract_address();
         token_client.transfer(&contract_address, &user, &amount);
 
+        // Increment nonce after successful execution
+        storage::increment_nonce(&env);
+
         // Emit withdraw event
-        events::emit_withdraw(&env, &user, asset, amount);
+        events::emit_withdraw(&env, nonce, &user, asset, amount);
     }
 
     /// Settle a trade between two users.
@@ -111,26 +118,26 @@ impl OrderBookContract {
     /// - The buyer gives `amount_bought` of `asset_bought` to the seller
     ///
     /// # Arguments
+    /// * `nonce` - Execution nonce (must match current contract nonce)
     /// * `buyer` - Address receiving asset_sold, paying asset_bought
     /// * `seller` - Address receiving asset_bought, paying asset_sold
     /// * `asset_sold` - The asset being sold (flows seller → buyer)
     /// * `amount_sold` - Amount of asset_sold being traded
     /// * `asset_bought` - The asset being bought (flows buyer → seller)
     /// * `amount_bought` - Amount of asset_bought being traded
-    /// * `trade_id` - Unique identifier for this trade
     ///
     /// # Panics
     /// Panics if amounts are not positive, either party has insufficient balance,
-    /// or admin doesn't authorize
+    /// nonce doesn't match, or admin doesn't authorize
     pub fn settle(
         env: Env,
+        nonce: u64,
         buyer: Address,
         seller: Address,
         asset_sold: Asset,
         amount_sold: i128,
         asset_bought: Asset,
         amount_bought: i128,
-        trade_id: u64,
     ) {
         // Admin must authorize settlements
         let admin = storage::get_admin(&env);
@@ -141,6 +148,9 @@ impl OrderBookContract {
         }
 
         storage::extend_instance_ttl(&env);
+
+        // Validate nonce matches current value
+        storage::validate_nonce(&env, nonce);
 
         // Update seller's balances:
         // - Decrease asset_sold (what they're selling)
@@ -154,10 +164,13 @@ impl OrderBookContract {
         storage::increase_balance(&env, &buyer, asset_sold, amount_sold);
         storage::decrease_balance(&env, &buyer, asset_bought, amount_bought);
 
+        // Increment nonce after successful execution
+        storage::increment_nonce(&env);
+
         // Emit settle event
         events::emit_settle(
             &env,
-            trade_id,
+            nonce,
             &buyer,
             &seller,
             asset_sold,
@@ -199,6 +212,18 @@ impl OrderBookContract {
     pub fn get_asset(env: Env, asset: Asset) -> Address {
         storage::extend_instance_ttl(&env);
         storage::get_asset_address(&env, asset)
+    }
+
+    /// Get the current execution nonce.
+    ///
+    /// The nonce is used to ensure sequential execution order of withdrawals
+    /// and settlements. Each successful operation increments the nonce.
+    ///
+    /// # Returns
+    /// The current nonce value (starts at 0)
+    pub fn get_nonce(env: Env) -> u64 {
+        storage::extend_instance_ttl(&env);
+        storage::get_nonce(&env)
     }
 }
 

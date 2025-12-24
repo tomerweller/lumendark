@@ -86,3 +86,29 @@ pub fn decrease_balance(env: &Env, user: &Address, asset: Asset, amount: i128) {
     }
     set_user_balance(env, user, asset, current - amount);
 }
+
+/// Get the current nonce value
+/// Returns 0 if not yet initialized
+pub fn get_nonce(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::Nonce)
+        .unwrap_or(0)
+}
+
+/// Validate that the provided nonce matches the current nonce
+/// Panics if the nonce doesn't match
+pub fn validate_nonce(env: &Env, expected_nonce: u64) {
+    let current = get_nonce(env);
+    if expected_nonce != current {
+        panic!("Invalid nonce: expected {}, got {}", current, expected_nonce);
+    }
+}
+
+/// Increment the nonce by 1
+pub fn increment_nonce(env: &Env) {
+    let current = get_nonce(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::Nonce, &(current + 1));
+}

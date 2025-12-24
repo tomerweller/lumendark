@@ -26,27 +26,27 @@ flowchart TB
 
     subgraph Backend
         API[HTTP API]
-        Executor[Main Executor]
+        Handler[Message Handler]
         Balances[(Balances)]
         OrderBook[(Order Book)]
-        Outgoing[Outgoing Processor]
+        Actions[Action Handler]
         Events[Event Listener]
     end
 
     %% Deposit flow
     U1 -->|"1. deposit()"| Contract
     Contract -.->|"2. emit event"| Events
-    Events -->|"3. credit balance"| Executor
+    Events -->|"3. credit balance"| Handler
 
     %% Order flow
     U1 -->|"POST /orders"| API
-    API --> |"orders/cancels/withdraws"| Executor
-    Executor --> Balances
-    Executor --> OrderBook
-    Executor --> Outgoing
+    API --> |"orders/cancels/withdraws"| Handler
+    Handler --> Balances
+    Handler --> OrderBook
+    Handler --> Actions
 
     %% Settlement flow
-    Outgoing -->|"settle() / withdraw()"| Contract
+    Actions -->|"settle() / withdraw()"| Contract
 
     %% Withdrawal flow
     U1 -->|"POST /withdrawals"| API
@@ -175,14 +175,14 @@ POST /withdrawals
 1. User submits signed order via API
 2. Backend validates balance and locks funds (available → liabilities)
 3. Matching engine matches against resting orders (price-time priority)
-4. For each trade, backend queues settlement transaction
-5. Outgoing processor submits `settle()` transaction to contract
+4. For each trade, backend queues settlement action
+5. Action handler submits `settle()` transaction to contract
 
 ### Withdrawal Flow
 
 1. User submits signed withdrawal request via API
 2. Backend validates available balance and decreases it
-3. Outgoing processor submits `withdraw()` transaction to contract
+3. Action handler submits `withdraw()` transaction to contract
 
 ## Project Structure
 
@@ -200,8 +200,8 @@ lumendark/
 │       ├── models/                 # Order, User, Trade, Message
 │       ├── storage/                # UserStore, OrderBook, MessageStore
 │       ├── matching/               # Matching engine
-│       ├── queues/                 # Incoming/Outgoing queues
-│       ├── executor/               # MainExecutor, OutgoingProcessor
+│       ├── queues/                 # Message/Action queues
+│       ├── executor/               # MessageHandler, ActionHandler
 │       ├── blockchain/             # SorobanClient, EventListener, TransactionSubmitter
 │       └── api/                    # FastAPI routes
 └── client/                         # Python client library

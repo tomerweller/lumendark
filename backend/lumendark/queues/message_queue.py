@@ -1,25 +1,25 @@
 import asyncio
 from typing import Optional
 
-from lumendark.models.message import IncomingMessage
+from lumendark.models.message import Message
 
 
-class IncomingQueue:
+class MessageQueue:
     """
     Async queue for incoming messages.
 
     All user requests (orders, cancels, withdrawals) and blockchain events
-    (deposits) are queued here for processing by the MainExecutor.
+    (deposits) are queued here for processing by the MessageHandler.
     """
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[IncomingMessage] = asyncio.Queue()
+        self._queue: asyncio.Queue[Message] = asyncio.Queue()
 
-    async def put(self, message: IncomingMessage) -> None:
+    async def put(self, message: Message) -> None:
         """Add a message to the queue."""
         await self._queue.put(message)
 
-    async def get(self, timeout: Optional[float] = None) -> Optional[IncomingMessage]:
+    async def get(self, timeout: Optional[float] = None) -> Optional[Message]:
         """
         Get a message from the queue.
 

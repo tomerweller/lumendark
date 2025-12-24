@@ -1,7 +1,7 @@
-from lumendark.queues.incoming import IncomingQueue
-from lumendark.queues.outgoing import OutgoingQueue
+from lumendark.queues.message_queue import MessageQueue
+from lumendark.queues.action_queue import ActionQueue
 
 __all__ = [
-    "IncomingQueue",
-    "OutgoingQueue",
+    "MessageQueue",
+    "ActionQueue",
 ]

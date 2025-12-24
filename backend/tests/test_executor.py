@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 
 from lumendark.models.message import (
-    IncomingMessage,
+    Message,
     MessageType,
     MessageStatus,
 )
@@ -11,9 +11,9 @@ from lumendark.models.order import OrderSide
 from lumendark.storage.user_store import UserStore
 from lumendark.storage.order_book import OrderBook
 from lumendark.storage.message_store import MessageStore
-from lumendark.queues.incoming import IncomingQueue
-from lumendark.queues.outgoing import OutgoingQueue
-from lumendark.executor.main_executor import MainExecutor
+from lumendark.queues.message_queue import MessageQueue
+from lumendark.queues.action_queue import ActionQueue
+from lumendark.executor.message_handler import MessageHandler
 
 
 @pytest.fixture
@@ -32,26 +32,26 @@ def message_store() -> MessageStore:
 
 
 @pytest.fixture
-def incoming_queue() -> IncomingQueue:
-    return IncomingQueue()
+def message_queue() -> MessageQueue:
+    return MessageQueue()
 
 
 @pytest.fixture
-def outgoing_queue() -> OutgoingQueue:
-    return OutgoingQueue()
+def action_queue() -> ActionQueue:
+    return ActionQueue()
 
 
 @pytest.fixture
-def executor(
-    incoming_queue: IncomingQueue,
-    outgoing_queue: OutgoingQueue,
+def message_handler(
+    message_queue: MessageQueue,
+    action_queue: ActionQueue,
     user_store: UserStore,
     order_book: OrderBook,
     message_store: MessageStore,
-) -> MainExecutor:
-    return MainExecutor(
-        incoming_queue=incoming_queue,
-        outgoing_queue=outgoing_queue,
+) -> MessageHandler:
+    return MessageHandler(
+        message_queue=message_queue,
+        action_queue=action_queue,
         user_store=user_store,
         order_book=order_book,
         message_store=message_store,
@@ -64,12 +64,12 @@ class TestDepositProcessing:
     @pytest.mark.asyncio
     async def test_deposit_increases_balance(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         message_store: MessageStore,
     ) -> None:
         """Deposit should increase user's available balance."""
-        message = IncomingMessage.create_deposit(
+        message = Message.create_deposit(
             user_address="user1",
             asset="a",
             amount="1000",
@@ -78,7 +78,7 @@ class TestDepositProcessing:
         )
         message_store.add(message)
 
-        await executor._process_message(message)
+        await message_handler._process_message(message)
 
         assert message.status == MessageStatus.ACCEPTED
         assert user_store.get_available("user1", "a") == Decimal("1000")
@@ -86,14 +86,14 @@ class TestDepositProcessing:
     @pytest.mark.asyncio
     async def test_deposit_creates_user(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         message_store: MessageStore,
     ) -> None:
         """Deposit should create user if first time."""
         assert user_store.get("new_user") is None
 
-        message = IncomingMessage.create_deposit(
+        message = Message.create_deposit(
             user_address="new_user",
             asset="b",
             amount="500",
@@ -102,7 +102,7 @@ class TestDepositProcessing:
         )
         message_store.add(message)
 
-        await executor._process_message(message)
+        await message_handler._process_message(message)
 
         assert user_store.get("new_user") is not None
         assert user_store.get_available("new_user", "b") == Decimal("500")
@@ -110,11 +110,11 @@ class TestDepositProcessing:
     @pytest.mark.asyncio
     async def test_deposit_invalid_amount_rejected(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         message_store: MessageStore,
     ) -> None:
         """Deposit with invalid amount should be rejected."""
-        message = IncomingMessage.create_deposit(
+        message = Message.create_deposit(
             user_address="user1",
             asset="a",
             amount="invalid",
@@ -123,7 +123,7 @@ class TestDepositProcessing:
         )
         message_store.add(message)
 
-        await executor._process_message(message)
+        await message_handler._process_message(message)
 
         assert message.status == MessageStatus.REJECTED
         assert "Invalid amount" in str(message.rejection_reason)
@@ -135,7 +135,7 @@ class TestOrderProcessing:
     @pytest.mark.asyncio
     async def test_order_allocates_liability(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         message_store: MessageStore,
     ) -> None:
@@ -144,7 +144,7 @@ class TestOrderProcessing:
         user_store.deposit("buyer1", "b", Decimal("1000"))
 
         # Place buy order: 10 A @ 50 B = 500 B required
-        message = IncomingMessage.create_order(
+        message = Message.create_order(
             user_address="buyer1",
             side="buy",
             price="50",
@@ -152,7 +152,7 @@ class TestOrderProcessing:
         )
         message_store.add(message)
 
-        await executor._process_message(message)
+        await message_handler._process_message(message)
 
         assert message.status == MessageStatus.ACCEPTED
         assert user_store.get_available("buyer1", "b") == Decimal("500")
@@ -161,7 +161,7 @@ class TestOrderProcessing:
     @pytest.mark.asyncio
     async def test_order_insufficient_balance_rejected(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         message_store: MessageStore,
     ) -> None:
@@ -169,7 +169,7 @@ class TestOrderProcessing:
         user_store.deposit("buyer1", "b", Decimal("100"))
 
         # Try to place order requiring 500 B
-        message = IncomingMessage.create_order(
+        message = Message.create_order(
             user_address="buyer1",
             side="buy",
             price="50",
@@ -177,7 +177,7 @@ class TestOrderProcessing:
         )
         message_store.add(message)
 
-        await executor._process_message(message)
+        await message_handler._process_message(message)
 
         assert message.status == MessageStatus.REJECTED
         assert "Insufficient balance" in str(message.rejection_reason)
@@ -185,11 +185,11 @@ class TestOrderProcessing:
     @pytest.mark.asyncio
     async def test_order_no_user_rejected(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         message_store: MessageStore,
     ) -> None:
         """Order from unknown user should be rejected."""
-        message = IncomingMessage.create_order(
+        message = Message.create_order(
             user_address="unknown",
             side="buy",
             price="50",
@@ -197,7 +197,7 @@ class TestOrderProcessing:
         )
         message_store.add(message)
 
-        await executor._process_message(message)
+        await message_handler._process_message(message)
 
         assert message.status == MessageStatus.REJECTED
         assert "not found" in str(message.rejection_reason)
@@ -205,7 +205,7 @@ class TestOrderProcessing:
     @pytest.mark.asyncio
     async def test_order_added_to_book(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         order_book: OrderBook,
         message_store: MessageStore,
@@ -213,7 +213,7 @@ class TestOrderProcessing:
         """Non-matching order should be added to book."""
         user_store.deposit("seller1", "a", Decimal("100"))
 
-        message = IncomingMessage.create_order(
+        message = Message.create_order(
             user_address="seller1",
             side="sell",
             price="100",
@@ -221,7 +221,7 @@ class TestOrderProcessing:
         )
         message_store.add(message)
 
-        await executor._process_message(message)
+        await message_handler._process_message(message)
 
         assert message.status == MessageStatus.ACCEPTED
         assert message.order_id is not None
@@ -230,10 +230,10 @@ class TestOrderProcessing:
     @pytest.mark.asyncio
     async def test_order_matches_and_trades(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         order_book: OrderBook,
-        outgoing_queue: OutgoingQueue,
+        action_queue: ActionQueue,
         message_store: MessageStore,
     ) -> None:
         """Matching orders should generate trades."""
@@ -242,30 +242,30 @@ class TestOrderProcessing:
         user_store.deposit("buyer1", "b", Decimal("1000"))
 
         # Seller places ask
-        sell_msg = IncomingMessage.create_order(
+        sell_msg = Message.create_order(
             user_address="seller1",
             side="sell",
             price="10",
             quantity="50",
         )
         message_store.add(sell_msg)
-        await executor._process_message(sell_msg)
+        await message_handler._process_message(sell_msg)
 
         # Buyer places matching bid
-        buy_msg = IncomingMessage.create_order(
+        buy_msg = Message.create_order(
             user_address="buyer1",
             side="buy",
             price="10",
             quantity="50",
         )
         message_store.add(buy_msg)
-        await executor._process_message(buy_msg)
+        await message_handler._process_message(buy_msg)
 
         # Should have 1 trade
         assert buy_msg.trades_count == 1
 
-        # Outgoing queue should have settlement
-        assert not outgoing_queue.empty
+        # Action queue should have settlement
+        assert not action_queue.empty
 
         # Balances should be updated
         # Buyer: paid 500 B, received 50 A
@@ -282,7 +282,7 @@ class TestCancelProcessing:
     @pytest.mark.asyncio
     async def test_cancel_releases_liability(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         order_book: OrderBook,
         message_store: MessageStore,
@@ -291,26 +291,26 @@ class TestCancelProcessing:
         user_store.deposit("user1", "a", Decimal("100"))
 
         # Place order
-        order_msg = IncomingMessage.create_order(
+        order_msg = Message.create_order(
             user_address="user1",
             side="sell",
             price="10",
             quantity="50",
         )
         message_store.add(order_msg)
-        await executor._process_message(order_msg)
+        await message_handler._process_message(order_msg)
 
         order_id = order_msg.order_id
         assert user_store.get_available("user1", "a") == Decimal("50")
         assert user_store.get_liabilities("user1", "a") == Decimal("50")
 
         # Cancel order
-        cancel_msg = IncomingMessage.create_cancel(
+        cancel_msg = Message.create_cancel(
             user_address="user1",
             order_id=order_id,
         )
         message_store.add(cancel_msg)
-        await executor._process_message(cancel_msg)
+        await message_handler._process_message(cancel_msg)
 
         assert cancel_msg.status == MessageStatus.ACCEPTED
         assert user_store.get_available("user1", "a") == Decimal("100")
@@ -320,7 +320,7 @@ class TestCancelProcessing:
     @pytest.mark.asyncio
     async def test_cancel_other_user_rejected(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         order_book: OrderBook,
         message_store: MessageStore,
@@ -329,24 +329,24 @@ class TestCancelProcessing:
         user_store.deposit("user1", "a", Decimal("100"))
 
         # User1 places order
-        order_msg = IncomingMessage.create_order(
+        order_msg = Message.create_order(
             user_address="user1",
             side="sell",
             price="10",
             quantity="50",
         )
         message_store.add(order_msg)
-        await executor._process_message(order_msg)
+        await message_handler._process_message(order_msg)
 
         order_id = order_msg.order_id
 
         # User2 tries to cancel
-        cancel_msg = IncomingMessage.create_cancel(
+        cancel_msg = Message.create_cancel(
             user_address="user2",
             order_id=order_id,
         )
         message_store.add(cancel_msg)
-        await executor._process_message(cancel_msg)
+        await message_handler._process_message(cancel_msg)
 
         assert cancel_msg.status == MessageStatus.REJECTED
         assert "another user" in str(cancel_msg.rejection_reason)
@@ -356,16 +356,16 @@ class TestCancelProcessing:
     @pytest.mark.asyncio
     async def test_cancel_nonexistent_rejected(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         message_store: MessageStore,
     ) -> None:
         """Cannot cancel nonexistent order."""
-        cancel_msg = IncomingMessage.create_cancel(
+        cancel_msg = Message.create_cancel(
             user_address="user1",
             order_id="nonexistent",
         )
         message_store.add(cancel_msg)
-        await executor._process_message(cancel_msg)
+        await message_handler._process_message(cancel_msg)
 
         assert cancel_msg.status == MessageStatus.REJECTED
         assert "not found" in str(cancel_msg.rejection_reason)
@@ -377,45 +377,45 @@ class TestWithdrawProcessing:
     @pytest.mark.asyncio
     async def test_withdraw_decreases_balance(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
-        outgoing_queue: OutgoingQueue,
+        action_queue: ActionQueue,
         message_store: MessageStore,
     ) -> None:
-        """Withdrawal should decrease available balance and queue outgoing."""
+        """Withdrawal should decrease available balance and queue action."""
         user_store.deposit("user1", "a", Decimal("1000"))
 
-        message = IncomingMessage.create_withdraw(
+        message = Message.create_withdraw(
             user_address="user1",
             asset="a",
             amount="500",
         )
         message_store.add(message)
 
-        await executor._process_message(message)
+        await message_handler._process_message(message)
 
         assert message.status == MessageStatus.ACCEPTED
         assert user_store.get_available("user1", "a") == Decimal("500")
-        assert not outgoing_queue.empty
+        assert not action_queue.empty
 
     @pytest.mark.asyncio
     async def test_withdraw_insufficient_rejected(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         message_store: MessageStore,
     ) -> None:
         """Withdrawal exceeding available should be rejected."""
         user_store.deposit("user1", "a", Decimal("100"))
 
-        message = IncomingMessage.create_withdraw(
+        message = Message.create_withdraw(
             user_address="user1",
             asset="a",
             amount="500",
         )
         message_store.add(message)
 
-        await executor._process_message(message)
+        await message_handler._process_message(message)
 
         assert message.status == MessageStatus.REJECTED
         assert "Insufficient" in str(message.rejection_reason)
@@ -423,7 +423,7 @@ class TestWithdrawProcessing:
     @pytest.mark.asyncio
     async def test_withdraw_with_liabilities(
         self,
-        executor: MainExecutor,
+        message_handler: MessageHandler,
         user_store: UserStore,
         message_store: MessageStore,
     ) -> None:
@@ -431,33 +431,33 @@ class TestWithdrawProcessing:
         user_store.deposit("user1", "a", Decimal("100"))
 
         # Place order to lock 50 A
-        order_msg = IncomingMessage.create_order(
+        order_msg = Message.create_order(
             user_address="user1",
             side="sell",
             price="10",
             quantity="50",
         )
         message_store.add(order_msg)
-        await executor._process_message(order_msg)
+        await message_handler._process_message(order_msg)
 
         # Try to withdraw all 100 A
-        withdraw_msg = IncomingMessage.create_withdraw(
+        withdraw_msg = Message.create_withdraw(
             user_address="user1",
             asset="a",
             amount="100",
         )
         message_store.add(withdraw_msg)
-        await executor._process_message(withdraw_msg)
+        await message_handler._process_message(withdraw_msg)
 
         assert withdraw_msg.status == MessageStatus.REJECTED
 
         # Can withdraw available 50 A
-        withdraw_msg2 = IncomingMessage.create_withdraw(
+        withdraw_msg2 = Message.create_withdraw(
             user_address="user1",
             asset="a",
             amount="50",
         )
         message_store.add(withdraw_msg2)
-        await executor._process_message(withdraw_msg2)
+        await message_handler._process_message(withdraw_msg2)
 
         assert withdraw_msg2.status == MessageStatus.ACCEPTED
