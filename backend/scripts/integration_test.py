@@ -59,6 +59,7 @@ TX_TIMEOUT = 120  # seconds to wait for transaction confirmation
 # Paths
 PROJECT_ROOT = Path("/Users/tomer/dev/lumendark")
 ORDERBOOK_WASM = PROJECT_ROOT / "contracts/target/wasm32v1-none/release/orderbook.wasm"
+SERVER_LOG_FILE = Path("/tmp/lumendark_server.log")
 
 
 @dataclass
@@ -500,18 +501,22 @@ def start_backend_server(admin_secret: str, orderbook_contract: str) -> subproce
         "lumendark.api.app:app",
         "--host", "0.0.0.0",
         "--port", str(API_PORT),
-        "--log-level", "warning",
+        "--log-level", "info",
     ]
+
+    # Log server output to file for debugging
+    log_file = open(SERVER_LOG_FILE, "w")
 
     process = subprocess.Popen(
         cmd,
         env=env,
         cwd=str(PROJECT_ROOT / "backend"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
     )
 
     print(f"  Server started (PID: {process.pid})")
+    print(f"  Server logs: tail -f {SERVER_LOG_FILE}")
     return process
 
 
@@ -848,6 +853,8 @@ async def main():
     print("LUMEN DARK SELF-CONTAINED INTEGRATION TEST")
     print("=" * 60)
     print("\nThis test creates everything from scratch - no prerequisites needed.")
+    print(f"\nTip: To watch server logs in another terminal, run:")
+    print(f"  tail -f {SERVER_LOG_FILE}")
 
     results = TestResult()
     server_process = None
