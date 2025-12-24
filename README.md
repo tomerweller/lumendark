@@ -15,52 +15,53 @@ Lumen Dark is a decentralized dark pool that enables private trading of Stellar-
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              STELLAR NETWORK                                │
-│  ┌─────────────────────┐    ┌─────────────────────┐                        │
-│  │   Token A Contract  │    │   Token B Contract  │                        │
-│  └──────────┬──────────┘    └──────────┬──────────┘                        │
-│             └──────────┬───────────────┘                                    │
-│                        ▼                                                    │
-│            ┌───────────────────────┐                                        │
-│            │  OrderBook Contract   │                                        │
-│            │  • deposit()          │◄─── User authorizes transfer           │
-│            │  • withdraw()         │◄─── Admin authorizes                   │
-│            │  • settle()           │◄─── Admin authorizes                   │
-│            │  • get_balance()      │                                        │
-│            └───────────┬───────────┘                                        │
-│                        │ Events                                             │
-└────────────────────────┼────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           BACKEND SERVICE                                   │
-│  ┌──────────────────┐     ┌──────────────────────────────────────────────┐ │
-│  │ Deposit Event    │     │              INCOMING QUEUE                  │ │
-│  │ Listener         │────▶│  [deposit] [order] [cancel] [withdraw] ...   │ │
-│  │ (Soroban RPC)    │     └──────────────────────┬───────────────────────┘ │
-│  └──────────────────┘                            │                         │
-│                                                  ▼                         │
-│  ┌──────────────────┐     ┌──────────────────────────────────────────────┐ │
-│  │ HTTP API         │     │              MAIN EXECUTOR                   │ │
-│  │ (FastAPI)        │────▶│  ┌────────────┐  ┌────────────┐              │ │
-│  │                  │     │  │ User Store │  │ Order Book │              │ │
-│  │ POST /orders     │     │  │ (balances) │  │ (bids/asks)│              │ │
-│  │ POST /orders/cancel    │  └────────────┘  └────────────┘              │ │
-│  │ POST /withdrawals│     │         │              │                     │ │
-│  │ GET /messages/{id}     │         └──────┬───────┘                     │ │
-│  └──────────────────┘     │                ▼                             │ │
-│                           │       ┌─────────────────┐                    │ │
-│                           │       │ Matching Engine │                    │ │
-│                           │       └────────┬────────┘                    │ │
-│                           └────────────────┼─────────────────────────────┘ │
-│                                            ▼                               │
-│                           ┌──────────────────────────────────────────────┐ │
-│                           │         OUTGOING PROCESSOR                   │ │
-│                           │  Submit withdraw() / settle() transactions  │ │
-│                           └──────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
+                                    USERS
+                                      │
+                 ┌────────────────────┼────────────────────┐
+                 │                    │                    │
+                 ▼                    ▼                    ▼
+           ┌──────────┐         ┌──────────┐         ┌──────────┐
+           │ deposit()│         │ Signed   │         │ Signed   │
+           │ on-chain │         │ Orders   │         │Withdrawals
+           └────┬─────┘         └────┬─────┘         └────┬─────┘
+                │                    │                    │
+    ════════════╪════════════════════╪════════════════════╪════════════
+    STELLAR     │                    │                    │
+    NETWORK     ▼               ─────┼────────────────────┼─────
+           ┌─────────┐          │    │      BACKEND       │    │
+           │Orderbook│          │    ▼                    ▼    │
+           │Contract │◄─────────│──────────────────────────────│
+           └────┬────┘ settle() │  ┌──────────────────────┐    │
+                │    withdraw() │  │     HTTP API         │    │
+    ════════════╪═══════════════│  │  POST /orders        │    │
+                │               │  │  POST /withdrawals   │    │
+                │  Events       │  └──────────┬───────────┘    │
+                ▼               │             │                │
+           ┌─────────┐          │             ▼                │
+           │ Event   │          │  ┌──────────────────────┐    │
+           │ Listener│──────────┼─▶│   Main Executor      │    │
+           └─────────┘          │  │  ┌────────┬────────┐ │    │
+                                │  │  │Balances│Orders  │ │    │
+                                │  │  └────────┴────────┘ │    │
+                                │  │         │            │    │
+                                │  │         ▼            │    │
+                                │  │  ┌────────────┐      │    │
+                                │  │  │  Matching  │      │    │
+                                │  │  │   Engine   │      │    │
+                                │  │  └─────┬──────┘      │    │
+                                │  └────────┼─────────────┘    │
+                                │           ▼                  │
+                                │  ┌──────────────────────┐    │
+                                │  │ Outgoing Processor   │────┘
+                                │  │ (settle/withdraw txs)│
+                                │  └──────────────────────┘
+                                └──────────────────────────────
 ```
+
+**Flow Summary:**
+- **Deposits**: User → Contract → Event → Backend credits balance
+- **Orders**: User → API → Matching → Settlement tx → Contract
+- **Withdrawals**: User → API → Withdrawal tx → Contract → User
 
 ## Testnet Deployment
 
@@ -263,13 +264,76 @@ stellar contract deploy \
 ### Run Tests
 
 ```bash
-# Backend tests
+# Backend unit tests
 cd backend
 pytest
 
 # Contract tests
 cd contracts
 cargo test
+```
+
+### Integration Test
+
+A fully self-contained end-to-end integration test is available that requires **zero prerequisites** - it creates everything from scratch on Stellar Testnet:
+
+```bash
+cd backend
+python3 scripts/integration_test.py
+```
+
+**What the integration test does:**
+
+1. **Creates accounts** - Admin, Token Issuer, User1, User2 (funded via Friendbot)
+2. **Deploys SAC tokens** - TOKA and TOKB using Python SDK
+3. **Deploys orderbook contract** - With constructor arguments (admin, token_a, token_b)
+4. **Sets up trustlines** - Users establish trustlines to both tokens
+5. **Mints tokens** - Initial token balances for test users
+6. **Starts backend server** - With correct environment variables
+7. **Makes deposits** - Users deposit tokens to the orderbook contract
+8. **Runs test suite:**
+   - Health check
+   - Order placement (SELL order, BUY order with matching)
+   - Order cancellation
+   - Multiple orders at different prices
+   - Partial fill matching
+   - Withdrawal flow
+   - Insufficient balance handling
+
+**Example output:**
+```
+============================================================
+LUMEN DARK SELF-CONTAINED INTEGRATION TEST
+============================================================
+
+--- Creating and Funding Accounts ---
+  Admin: GA4FVT...
+  All accounts funded successfully
+
+--- Deploying Contracts ---
+  TOKA SAC deployed: CAS67G...
+  TOKB SAC deployed: CDMOHY...
+  Orderbook deployed: CA5T2E...
+
+--- Starting Backend Server ---
+  Server is ready
+
+--- Making Deposits to Orderbook ---
+  Deposit confirmed
+
+============================================================
+RUNNING TESTS
+============================================================
+  [PASS] Health check
+  [PASS] User1 SELL order accepted
+  [PASS] User2 BUY order matched
+  [PASS] Order cancelled successfully
+  [PASS] All 4 SELL orders accepted
+  [PASS] Partial fill BUY order processed
+  [PASS] Withdrawal accepted
+
+Results: 12 passed, 0 failed
+============================================================
 ```
 
 ## Security Considerations

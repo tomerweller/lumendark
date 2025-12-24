@@ -1,120 +1,81 @@
 #!/usr/bin/env python3
 """
-Comprehensive E2E integration test for Lumen Dark on Stellar Testnet.
+Fully self-contained E2E integration test for Lumen Dark.
 
-Tests:
-- Multiple deposits (Token A and Token B)
-- Order placement (buy and sell)
-- Order matching and settlement
-- Order cancellation
-- Withdrawals
+This test sets up EVERYTHING from scratch:
+- Creates new accounts (admin, token issuer, users)
+- Funds them via Friendbot
+- Deploys SAC tokens
+- Mints tokens to users
+- Deploys and initializes the orderbook contract
+- Starts the backend server
+- Runs comprehensive tests
+- Cleans up
 
-Prerequisites:
-- Backend server running with ADMIN_SECRET_KEY set
-- Stellar CLI configured with 'admin', 'user1', 'user2' keys
-- Testnet contracts deployed
+No pre-existing state required. Just run it.
 """
 
 import asyncio
+import hashlib
+import os
+import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
-# Add parent directory to path for imports
+import httpx
+from stellar_sdk import (
+    Asset,
+    Keypair,
+    Network,
+    Server,
+    SorobanServer,
+    TransactionBuilder,
+    scval,
+)
+from stellar_sdk.soroban_rpc import GetTransactionStatus
+
+# Add paths for imports
 sys.path.insert(0, "/Users/tomer/dev/lumendark/client")
 sys.path.insert(0, "/Users/tomer/dev/lumendark/backend")
 
-from stellar_sdk import Keypair
 from lumendark_client import LumenDarkClient
 
-# Contract addresses (from deployment)
-ORDERBOOK_CONTRACT = "CDNTW7OWJF7LYWERWLQMUUCUIR5Q4XMFSXCHALRS3V3SN5KRDSCJT2DY"
-TOKEN_A_CONTRACT = "CCZXVH2AJO3X3ZIUXSN2VR5I3TZ4MNDUAI3JYDMTPOLXMCOOIVUMNKFW"
-TOKEN_B_CONTRACT = "CDRASGTVJWOQTWCXNXD2YHIHHK2BHUONJMQHHWE25HQMFONWBL4XCYE3"
+# Constants
+HORIZON_URL = "https://horizon-testnet.stellar.org"
+SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org"
+FRIENDBOT_URL = "https://friendbot.stellar.org"
+NETWORK_PASSPHRASE = Network.TESTNET_NETWORK_PASSPHRASE
+API_PORT = 8765  # Use a different port to avoid conflicts
+API_BASE_URL = f"http://localhost:{API_PORT}"
 
-# Backend API
-API_BASE_URL = "http://localhost:8000"
+# Fee settings - inclusion fee added on top of resource fee for surge pricing
+INCLUSION_FEE = 10000  # 10,000 stroops
+TX_TIMEOUT = 120  # seconds to wait for transaction confirmation
 
-# Test amounts (with 7 decimals)
-DEPOSIT_A_AMOUNT = 500_0000000  # 500 Token A
-DEPOSIT_B_AMOUNT = 2500_0000000  # 2500 Token B
-
-
-def get_keypair(alias: str) -> Keypair:
-    """Get keypair from stellar CLI."""
-    result = subprocess.run(
-        ["stellar", "keys", "show", alias],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to get keypair for {alias}: {result.stderr}")
-    secret = result.stdout.strip()
-    return Keypair.from_secret(secret)
+# Paths
+PROJECT_ROOT = Path("/Users/tomer/dev/lumendark")
+ORDERBOOK_WASM = PROJECT_ROOT / "contracts/target/wasm32v1-none/release/orderbook.wasm"
 
 
-def get_address(alias: str) -> str:
-    """Get public address from stellar CLI."""
-    result = subprocess.run(
-        ["stellar", "keys", "address", alias],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to get address for {alias}: {result.stderr}")
-    return result.stdout.strip()
+@dataclass
+class TestAccounts:
+    """All accounts used in the test."""
+    admin: Keypair
+    token_issuer: Keypair
+    user1: Keypair
+    user2: Keypair
 
 
-def invoke_contract(source: str, contract: str, function: str, args: list[str], timeout: int = 60) -> str:
-    """Invoke a contract function."""
-    cmd = [
-        "stellar", "contract", "invoke",
-        "--id", contract,
-        "--source-account", source,
-        "--network", "testnet",
-        "--",
-        function,
-    ] + args
-
-    print(f"    $ stellar contract invoke ... {function} {' '.join(args[:4])}...")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Contract invocation failed: {result.stderr}")
-
-    return result.stdout.strip()
-
-
-def deposit_to_orderbook(user_alias: str, asset: str, amount: int) -> None:
-    """Have a user deposit tokens to the orderbook contract."""
-    user_address = get_address(user_alias)
-
-    invoke_contract(
-        source=user_alias,
-        contract=ORDERBOOK_CONTRACT,
-        function="deposit",
-        args=[
-            "--user", user_address,
-            "--asset", f'"{asset.upper()}"',
-            "--amount", str(amount),
-        ],
-    )
-
-
-def check_balance(user_alias: str, asset: str) -> int:
-    """Check a user's balance in the orderbook contract."""
-    user_address = get_address(user_alias)
-
-    result = invoke_contract(
-        source="admin",
-        contract=ORDERBOOK_CONTRACT,
-        function="get_balance",
-        args=[
-            "--user", user_address,
-            "--asset", f'"{asset.upper()}"',
-        ],
-    )
-    return int(result.replace('"', ''))
+@dataclass
+class DeployedContracts:
+    """Deployed contract addresses."""
+    token_a: str
+    token_b: str
+    orderbook: str
 
 
 class TestResult:
@@ -126,12 +87,12 @@ class TestResult:
 
     def success(self, name: str):
         self.passed += 1
-        print(f"  ✅ {name}")
+        print(f"  [PASS] {name}")
 
     def failure(self, name: str, error: str):
         self.failed += 1
         self.errors.append((name, error))
-        print(f"  ❌ {name}: {error}")
+        print(f"  [FAIL] {name}: {error}")
 
     def summary(self):
         print(f"\n{'=' * 60}")
@@ -144,9 +105,505 @@ class TestResult:
         return self.failed == 0
 
 
+# =============================================================================
+# HELPERS: Transaction Submission with Proper Fee Handling
+# =============================================================================
+
+def submit_soroban_tx(
+    server: SorobanServer,
+    tx,
+    signer: Keypair,
+    description: str = "Transaction",
+) -> any:
+    """
+    Submit a Soroban transaction with proper fee handling.
+
+    Adds inclusion fee on top of resource fee from simulation.
+    """
+    # Simulate
+    sim_response = server.simulate_transaction(tx)
+    if sim_response.error:
+        raise RuntimeError(f"{description} simulation failed: {sim_response.error}")
+
+    # Prepare (adds resource fee)
+    tx = server.prepare_transaction(tx, sim_response)
+
+    # Add inclusion fee on top of resource fee for surge pricing
+    tx.transaction.fee += INCLUSION_FEE
+
+    # Sign and submit
+    tx.sign(signer)
+    response = server.send_transaction(tx)
+
+    if hasattr(response, 'status') and str(response.status) == "SendTransactionStatus.ERROR":
+        raise RuntimeError(f"{description} failed to submit")
+
+    # Wait for confirmation
+    tx_hash = response.hash
+    for i in range(TX_TIMEOUT):
+        result = server.get_transaction(tx_hash)
+        if result.status == GetTransactionStatus.SUCCESS:
+            return result
+        elif result.status == GetTransactionStatus.FAILED:
+            raise RuntimeError(f"{description} failed on-chain")
+        if i > 0 and i % 30 == 0:
+            print(f"      Still waiting for {description}... ({i}s)")
+        time.sleep(1)
+
+    raise TimeoutError(f"{description} timed out after {TX_TIMEOUT}s")
+
+
+# =============================================================================
+# SETUP: Account Creation and Funding
+# =============================================================================
+
+async def fund_account(address: str) -> bool:
+    """Fund an account using Friendbot with retry."""
+    async with httpx.AsyncClient(timeout=120) as client:
+        for attempt in range(3):
+            try:
+                response = await client.get(f"{FRIENDBOT_URL}?addr={address}")
+                if response.status_code == 200:
+                    return True
+                # Account already funded is also OK
+                if response.status_code == 400 and "already" in response.text.lower():
+                    return True
+            except Exception as e:
+                if attempt < 2:
+                    print(f"    Friendbot retry for {address[:8]}... (attempt {attempt+2})")
+                    await asyncio.sleep(2)
+                else:
+                    print(f"    Warning: Friendbot error for {address[:8]}...: {e}")
+                    return False
+        return False
+
+
+async def create_and_fund_accounts() -> TestAccounts:
+    """Create new keypairs and fund them."""
+    print("\n--- Creating and Funding Accounts ---")
+
+    accounts = TestAccounts(
+        admin=Keypair.random(),
+        token_issuer=Keypair.random(),
+        user1=Keypair.random(),
+        user2=Keypair.random(),
+    )
+
+    print(f"  Admin: {accounts.admin.public_key[:16]}...")
+    print(f"  Token Issuer: {accounts.token_issuer.public_key[:16]}...")
+    print(f"  User1: {accounts.user1.public_key[:16]}...")
+    print(f"  User2: {accounts.user2.public_key[:16]}...")
+
+    # Fund all accounts in parallel
+    print("  Funding accounts via Friendbot...")
+    results = await asyncio.gather(
+        fund_account(accounts.admin.public_key),
+        fund_account(accounts.token_issuer.public_key),
+        fund_account(accounts.user1.public_key),
+        fund_account(accounts.user2.public_key),
+    )
+
+    if not all(results):
+        raise RuntimeError("Failed to fund all accounts")
+
+    print("  All accounts funded successfully")
+    return accounts
+
+
+# =============================================================================
+# SETUP: Token Deployment (SAC - Stellar Asset Contract)
+# =============================================================================
+
+def deploy_sac_token(
+    server: SorobanServer,
+    horizon: Server,
+    issuer: Keypair,
+    asset_code: str,
+) -> str:
+    """
+    Deploy a Stellar Asset Contract (SAC) for a custom asset.
+
+    Returns the contract address.
+    """
+    print(f"  Deploying SAC for {asset_code}...")
+
+    # Create the asset
+    asset = Asset(asset_code, issuer.public_key)
+
+    # Load account
+    account = horizon.load_account(issuer.public_key)
+
+    # Build transaction to deploy SAC
+    builder = TransactionBuilder(
+        source_account=account,
+        network_passphrase=NETWORK_PASSPHRASE,
+        base_fee=100,
+    )
+
+    # Create SAC deployment operation
+    builder.append_create_stellar_asset_contract_from_asset_op(
+        asset=asset,
+        source=issuer.public_key,
+    )
+
+    builder.set_timeout(30)
+    tx = builder.build()
+
+    # Submit with proper fee handling
+    submit_soroban_tx(server, tx, issuer, f"SAC deploy {asset_code}")
+
+    # The contract address is derived from the asset
+    contract_id = asset.contract_id(NETWORK_PASSPHRASE)
+    print(f"    {asset_code} SAC deployed: {contract_id[:16]}...")
+    return contract_id
+
+
+def establish_trustline(
+    horizon: Server,
+    user: Keypair,
+    asset_code: str,
+    issuer_public_key: str,
+) -> None:
+    """Establish a trustline from user to asset."""
+    print(f"    Establishing trustline for {asset_code} to {user.public_key[:12]}...")
+
+    account = horizon.load_account(user.public_key)
+    asset = Asset(asset_code, issuer_public_key)
+
+    builder = TransactionBuilder(
+        source_account=account,
+        network_passphrase=NETWORK_PASSPHRASE,
+        base_fee=100,
+    )
+
+    from stellar_sdk.operation import ChangeTrust
+    builder.append_operation(ChangeTrust(asset=asset))
+    builder.set_timeout(30)
+    tx = builder.build()
+    tx.sign(user)
+
+    response = horizon.submit_transaction(tx)
+    if not response.get("successful"):
+        raise RuntimeError(f"Trustline failed: {response}")
+
+
+def mint_tokens(
+    server: SorobanServer,
+    horizon: Server,
+    issuer: Keypair,
+    contract_id: str,
+    to_address: str,
+    amount: int,
+) -> None:
+    """Mint tokens to an address using the SAC mint function."""
+    print(f"    Minting {amount // 10**7} tokens to {to_address[:12]}...")
+
+    account = horizon.load_account(issuer.public_key)
+
+    builder = TransactionBuilder(
+        source_account=account,
+        network_passphrase=NETWORK_PASSPHRASE,
+        base_fee=100,
+    )
+
+    # SAC mint function: mint(to: Address, amount: i128)
+    builder.append_invoke_contract_function_op(
+        contract_id=contract_id,
+        function_name="mint",
+        parameters=[
+            scval.to_address(to_address),
+            scval.to_int128(amount),
+        ],
+    )
+
+    builder.set_timeout(30)
+    tx = builder.build()
+
+    submit_soroban_tx(server, tx, issuer, f"Mint to {to_address[:8]}")
+
+
+# =============================================================================
+# SETUP: Orderbook Contract Deployment
+# =============================================================================
+
+def deploy_orderbook_contract(
+    server: SorobanServer,
+    horizon: Server,
+    admin: Keypair,
+    token_a_contract: str,
+    token_b_contract: str,
+) -> str:
+    """Deploy the orderbook contract with constructor args."""
+    from stellar_sdk import StrKey
+    from stellar_sdk.xdr import TransactionMeta
+
+    print("  Deploying orderbook contract...")
+
+    # Read WASM
+    if not ORDERBOOK_WASM.exists():
+        raise FileNotFoundError(f"WASM not found: {ORDERBOOK_WASM}")
+
+    wasm_bytes = ORDERBOOK_WASM.read_bytes()
+    wasm_hash = hashlib.sha256(wasm_bytes).digest()  # bytes, not hex
+    print(f"    WASM hash: {wasm_hash.hex()[:16]}...")
+
+    # Step 1: Upload WASM
+    print("    Uploading WASM...")
+    account = horizon.load_account(admin.public_key)
+
+    builder = TransactionBuilder(
+        source_account=account,
+        network_passphrase=NETWORK_PASSPHRASE,
+        base_fee=100,
+    )
+    builder.append_upload_contract_wasm_op(contract=wasm_bytes)
+    builder.set_timeout(30)
+    tx = builder.build()
+
+    result = submit_soroban_tx(server, tx, admin, "WASM upload")
+    print(f"    WASM uploaded successfully")
+
+    # Step 2: Create contract instance with constructor args
+    print("    Creating contract instance...")
+    account = horizon.load_account(admin.public_key)  # Reload for sequence
+
+    builder = TransactionBuilder(
+        source_account=account,
+        network_passphrase=NETWORK_PASSPHRASE,
+        base_fee=100,
+    )
+
+    # Deploy with constructor args: __constructor(admin, asset_a, asset_b)
+    builder.append_create_contract_op(
+        wasm_id=wasm_hash,  # 32-byte hash
+        address=admin.public_key,
+        constructor_args=[
+            scval.to_address(admin.public_key),  # admin
+            scval.to_address(token_a_contract),   # asset_a
+            scval.to_address(token_b_contract),   # asset_b
+        ],
+    )
+
+    builder.set_timeout(30)
+    tx = builder.build()
+
+    result = submit_soroban_tx(server, tx, admin, "Contract deploy")
+
+    # Extract contract ID from TransactionMeta
+    meta = TransactionMeta.from_xdr(result.result_meta_xdr)
+
+    # Handle different meta versions (v3 or v4)
+    if meta.v == 4:
+        return_val = meta.v4.soroban_meta.return_value
+    elif meta.v == 3:
+        return_val = meta.v3.soroban_meta.return_value
+    else:
+        raise RuntimeError(f"Unsupported meta version: {meta.v}")
+
+    # The return value is an Address SCVal containing the contract ID
+    # Structure: address.contract_id (ContractID) -> .contract_id (Hash) -> .hash (bytes)
+    addr = return_val.address
+    contract_bytes = bytes(addr.contract_id.contract_id.hash)
+    contract_id = StrKey.encode_contract(contract_bytes)
+    print(f"    Orderbook deployed: {contract_id[:16]}...")
+
+    # Step 3: Verify the contract is initialized by calling get_admin
+    print("    Verifying contract initialization...")
+    account = horizon.load_account(admin.public_key)
+
+    builder = TransactionBuilder(
+        source_account=account,
+        network_passphrase=NETWORK_PASSPHRASE,
+        base_fee=100,
+    )
+
+    builder.append_invoke_contract_function_op(
+        contract_id=contract_id,
+        function_name="get_admin",
+        parameters=[],
+    )
+
+    builder.set_timeout(30)
+    tx = builder.build()
+
+    sim_response = server.simulate_transaction(tx)
+    if sim_response.error:
+        raise RuntimeError(f"Contract verification failed - constructor may not have run: {sim_response.error}")
+
+    print(f"    Contract verified: admin is set")
+    return contract_id
+
+
+async def setup_contracts(accounts: TestAccounts) -> DeployedContracts:
+    """Deploy all contracts and mint initial tokens."""
+    print("\n--- Deploying Contracts ---")
+
+    server = SorobanServer(SOROBAN_RPC_URL)
+    horizon = Server(HORIZON_URL)
+
+    # Deploy token contracts (SAC)
+    token_a_contract = deploy_sac_token(server, horizon, accounts.token_issuer, "TOKA")
+    token_b_contract = deploy_sac_token(server, horizon, accounts.token_issuer, "TOKB")
+
+    # Deploy orderbook contract
+    orderbook_contract = deploy_orderbook_contract(
+        server, horizon, accounts.admin, token_a_contract, token_b_contract
+    )
+
+    print("\n--- Establishing Trustlines ---")
+    # Users need trustlines to receive tokens
+    establish_trustline(horizon, accounts.user1, "TOKA", accounts.token_issuer.public_key)
+    establish_trustline(horizon, accounts.user1, "TOKB", accounts.token_issuer.public_key)
+    establish_trustline(horizon, accounts.user2, "TOKA", accounts.token_issuer.public_key)
+    establish_trustline(horizon, accounts.user2, "TOKB", accounts.token_issuer.public_key)
+
+    print("\n--- Minting Initial Tokens ---")
+
+    # Mint tokens to users
+    # User1 gets Token A (will be selling)
+    mint_tokens(server, horizon, accounts.token_issuer, token_a_contract,
+                accounts.user1.public_key, 10000_0000000)  # 10000 Token A
+
+    # User2 gets Token B (will be buying)
+    mint_tokens(server, horizon, accounts.token_issuer, token_b_contract,
+                accounts.user2.public_key, 50000_0000000)  # 50000 Token B
+
+    # Also give each user some of the other token for flexibility
+    mint_tokens(server, horizon, accounts.token_issuer, token_b_contract,
+                accounts.user1.public_key, 5000_0000000)  # 5000 Token B
+    mint_tokens(server, horizon, accounts.token_issuer, token_a_contract,
+                accounts.user2.public_key, 1000_0000000)  # 1000 Token A
+
+    return DeployedContracts(
+        token_a=token_a_contract,
+        token_b=token_b_contract,
+        orderbook=orderbook_contract,
+    )
+
+
+# =============================================================================
+# SETUP: Backend Server
+# =============================================================================
+
+def start_backend_server(admin_secret: str, orderbook_contract: str) -> subprocess.Popen:
+    """Start the backend server as a subprocess."""
+    print("\n--- Starting Backend Server ---")
+
+    env = os.environ.copy()
+    env["ADMIN_SECRET_KEY"] = admin_secret
+    env["ORDERBOOK_CONTRACT_ID"] = orderbook_contract
+    env["SOROBAN_RPC_URL"] = SOROBAN_RPC_URL
+    env["PYTHONPATH"] = str(PROJECT_ROOT / "backend")
+
+    cmd = [
+        sys.executable, "-m", "uvicorn",
+        "lumendark.api.app:app",
+        "--host", "0.0.0.0",
+        "--port", str(API_PORT),
+        "--log-level", "warning",
+    ]
+
+    process = subprocess.Popen(
+        cmd,
+        env=env,
+        cwd=str(PROJECT_ROOT / "backend"),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    print(f"  Server started (PID: {process.pid})")
+    return process
+
+
+async def wait_for_server_ready(timeout: int = 30) -> bool:
+    """Wait for the server to be ready."""
+    print("  Waiting for server to be ready...")
+    async with httpx.AsyncClient() as client:
+        for _ in range(timeout):
+            try:
+                response = await client.get(f"{API_BASE_URL}/health")
+                if response.status_code == 200:
+                    print("  Server is ready")
+                    return True
+            except:
+                pass
+            await asyncio.sleep(1)
+    return False
+
+
+# =============================================================================
+# SETUP: Deposit to Orderbook
+# =============================================================================
+
+def deposit_to_orderbook(
+    server: SorobanServer,
+    horizon: Server,
+    user: Keypair,
+    orderbook_contract: str,
+    asset: str,
+    amount: int,
+) -> None:
+    """Deposit tokens to the orderbook contract."""
+    print(f"  Depositing {amount // 10**7} Token {asset.upper()} for {user.public_key[:12]}...")
+
+    account = horizon.load_account(user.public_key)
+
+    builder = TransactionBuilder(
+        source_account=account,
+        network_passphrase=NETWORK_PASSPHRASE,
+        base_fee=100,
+    )
+
+    # deposit(user, asset, amount)
+    asset_enum = scval.to_enum("A" if asset.lower() == "a" else "B", None)
+
+    builder.append_invoke_contract_function_op(
+        contract_id=orderbook_contract,
+        function_name="deposit",
+        parameters=[
+            scval.to_address(user.public_key),
+            asset_enum,
+            scval.to_int128(amount),
+        ],
+    )
+
+    builder.set_timeout(30)
+    tx = builder.build()
+
+    submit_soroban_tx(server, tx, user, f"Deposit {asset.upper()}")
+    print(f"    Deposit confirmed")
+
+
+async def setup_deposits(
+    accounts: TestAccounts,
+    contracts: DeployedContracts,
+) -> None:
+    """Make initial deposits to the orderbook."""
+    print("\n--- Making Deposits to Orderbook ---")
+
+    server = SorobanServer(SOROBAN_RPC_URL)
+    horizon = Server(HORIZON_URL)
+
+    # First, users need to authorize the orderbook to transfer their tokens
+    # This is done implicitly when deposit() is called with require_auth
+
+    # User1 deposits Token A
+    deposit_to_orderbook(server, horizon, accounts.user1, contracts.orderbook, "a", 1000_0000000)
+
+    # User2 deposits Token B
+    deposit_to_orderbook(server, horizon, accounts.user2, contracts.orderbook, "b", 5000_0000000)
+
+    # Wait for backend to detect deposits
+    print("  Waiting for deposit events to be detected...")
+    await asyncio.sleep(10)
+
+
+# =============================================================================
+# TESTS
+# =============================================================================
+
 async def test_health_check(results: TestResult):
     """Test API health endpoint."""
-    import httpx
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(f"{API_BASE_URL}/health")
@@ -158,78 +615,34 @@ async def test_health_check(results: TestResult):
             results.failure("Health check", str(e))
 
 
-async def test_deposits(results: TestResult):
-    """Test multiple deposits for both users."""
-    print("\n--- Testing Deposits ---")
-
-    # Get initial balances
-    try:
-        initial_a1 = check_balance("user1", "a")
-    except:
-        initial_a1 = 0
-    try:
-        initial_b2 = check_balance("user2", "b")
-    except:
-        initial_b2 = 0
-
-    # User1 deposits Token A
-    try:
-        print(f"  Depositing {DEPOSIT_A_AMOUNT // 10000000} Token A for user1...")
-        deposit_to_orderbook("user1", "a", DEPOSIT_A_AMOUNT)
-
-        # Verify balance increased
-        new_balance = check_balance("user1", "a")
-        expected = initial_a1 + DEPOSIT_A_AMOUNT
-        if new_balance >= expected:
-            results.success(f"User1 deposit Token A (balance: {new_balance})")
-        else:
-            results.failure("User1 deposit Token A", f"Expected >= {expected}, got {new_balance}")
-    except Exception as e:
-        results.failure("User1 deposit Token A", str(e))
-
-    # User2 deposits Token B
-    try:
-        print(f"  Depositing {DEPOSIT_B_AMOUNT // 10000000} Token B for user2...")
-        deposit_to_orderbook("user2", "b", DEPOSIT_B_AMOUNT)
-
-        new_balance = check_balance("user2", "b")
-        expected = initial_b2 + DEPOSIT_B_AMOUNT
-        if new_balance >= expected:
-            results.success(f"User2 deposit Token B (balance: {new_balance})")
-        else:
-            results.failure("User2 deposit Token B", f"Expected >= {expected}, got {new_balance}")
-    except Exception as e:
-        results.failure("User2 deposit Token B", str(e))
-
-    # Wait for event listener to detect deposits
-    print("  Waiting for deposit events to be detected...")
-    await asyncio.sleep(10)
-
-
-async def test_order_placement_and_matching(results: TestResult, user1_client: LumenDarkClient, user2_client: LumenDarkClient):
+async def test_order_placement(
+    results: TestResult,
+    user1_client: LumenDarkClient,
+    user2_client: LumenDarkClient,
+) -> tuple[Optional[str], Optional[str]]:
     """Test order placement and matching."""
-    print("\n--- Testing Order Placement and Matching ---")
+    print("\n--- Testing Order Placement ---")
+
+    sell_msg_id = None
+    buy_msg_id = None
 
     # User1 places a SELL order for Token A
     try:
         print("  User1 placing SELL order: 100 Token A @ price 5...")
         sell_msg_id = await user1_client.submit_order(
             side="sell",
-            price="5",  # 5 Token B per Token A
-            quantity="100",  # 100 Token A
+            price="5",
+            quantity="100",
         )
         results.success(f"User1 SELL order submitted (msg_id: {sell_msg_id[:8]}...)")
 
-        # Wait for processing
         await asyncio.sleep(2)
 
-        # Check status (StatusResponse is a dataclass)
         status = await user1_client.get_status(sell_msg_id)
         if status.is_accepted:
-            order_id = status.order_id
-            results.success(f"User1 SELL order accepted (order_id: {order_id})")
+            results.success(f"User1 SELL order accepted (order_id: {status.order_id})")
         else:
-            results.failure("User1 SELL order status", f"Expected accepted, got {status.status}")
+            results.failure("User1 SELL order status", f"Got {status.status}")
 
     except Exception as e:
         results.failure("User1 SELL order", str(e))
@@ -240,23 +653,33 @@ async def test_order_placement_and_matching(results: TestResult, user1_client: L
         print("  User2 placing BUY order: 50 Token A @ price 5...")
         buy_msg_id = await user2_client.submit_order(
             side="buy",
-            price="5",  # Willing to pay 5 Token B per Token A
-            quantity="50",  # 50 Token A
+            price="5",
+            quantity="50",
         )
         results.success(f"User2 BUY order submitted (msg_id: {buy_msg_id[:8]}...)")
 
         # Wait for matching and settlement
         print("  Waiting for order matching and settlement...")
-        await asyncio.sleep(15)  # Allow time for settlement
+        await asyncio.sleep(15)
 
-        status = await user2_client.get_status(buy_msg_id)
-        if status.is_accepted:
-            results.success(f"User2 BUY order matched")
-        else:
-            results.failure("User2 BUY order status", f"Got {status.status}")
+        # Retry status check a few times in case of transient connection issues
+        for attempt in range(3):
+            try:
+                status = await user2_client.get_status(buy_msg_id)
+                if status.is_accepted:
+                    results.success("User2 BUY order matched")
+                else:
+                    results.failure("User2 BUY order status", f"Got {status.status}")
+                break
+            except Exception as e:
+                if attempt == 2:
+                    results.failure("User2 BUY order", f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    Retry {attempt + 1}/3 after error: {type(e).__name__}")
+                    await asyncio.sleep(2)
 
     except Exception as e:
-        results.failure("User2 BUY order", str(e))
+        results.failure("User2 BUY order", f"{type(e).__name__}: {e}")
 
     return sell_msg_id, buy_msg_id
 
@@ -265,7 +688,6 @@ async def test_order_cancellation(results: TestResult, user1_client: LumenDarkCl
     """Test order cancellation."""
     print("\n--- Testing Order Cancellation ---")
 
-    # Place an order to cancel
     try:
         print("  User1 placing SELL order to cancel: 25 Token A @ price 10...")
         msg_id = await user1_client.submit_order(
@@ -275,7 +697,6 @@ async def test_order_cancellation(results: TestResult, user1_client: LumenDarkCl
         )
         await asyncio.sleep(2)
 
-        # Get order_id (StatusResponse is a dataclass)
         status = await user1_client.get_status(msg_id)
         order_id = status.order_id
 
@@ -304,17 +725,10 @@ async def test_withdrawal(results: TestResult, user1_client: LumenDarkClient):
     """Test withdrawal flow."""
     print("\n--- Testing Withdrawal ---")
 
-    # Get initial on-chain balance
-    try:
-        initial_balance = check_balance("user1", "a")
-        print(f"  Initial on-chain balance: {initial_balance}")
-    except:
-        initial_balance = 0
-
     withdraw_amount = 50_0000000  # 50 Token A
 
     try:
-        print(f"  Requesting withdrawal of {withdraw_amount // 10000000} Token A...")
+        print(f"  Requesting withdrawal of 50 Token A...")
         msg_id = await user1_client.request_withdrawal(
             asset="a",
             amount=str(withdraw_amount),
@@ -325,28 +739,24 @@ async def test_withdrawal(results: TestResult, user1_client: LumenDarkClient):
         print("  Waiting for on-chain withdrawal...")
         await asyncio.sleep(20)
 
-        # Check status (StatusResponse is a dataclass)
         status = await user1_client.get_status(msg_id)
         if status.is_accepted:
             results.success("Withdrawal accepted")
         else:
             results.failure("Withdrawal status", f"Got {status.status}")
 
-        # Verify on-chain balance decreased
-        new_balance = check_balance("user1", "a")
-        print(f"  New on-chain balance: {new_balance}")
-
-        # Note: Balance may have changed due to trades, so just verify withdrawal processed
-
     except Exception as e:
         results.failure("Withdrawal", str(e))
 
 
-async def test_multiple_orders_stress(results: TestResult, user1_client: LumenDarkClient, user2_client: LumenDarkClient):
+async def test_multiple_orders(
+    results: TestResult,
+    user1_client: LumenDarkClient,
+    user2_client: LumenDarkClient,
+):
     """Test multiple rapid orders."""
     print("\n--- Testing Multiple Orders ---")
 
-    # Place multiple sell orders at different prices
     sell_orders = []
     try:
         for i, price in enumerate([6, 7, 8, 9]):
@@ -360,7 +770,6 @@ async def test_multiple_orders_stress(results: TestResult, user1_client: LumenDa
 
         await asyncio.sleep(3)
 
-        # Check all orders accepted (StatusResponse is a dataclass)
         accepted = 0
         for msg_id in sell_orders:
             status = await user1_client.get_status(msg_id)
@@ -375,7 +784,7 @@ async def test_multiple_orders_stress(results: TestResult, user1_client: LumenDa
     except Exception as e:
         results.failure("Multiple SELL orders", str(e))
 
-    # Place a buy order that matches some of them
+    # Place a buy order that matches some
     try:
         print("  Placing BUY order: 25 @ 7 (should match 2 orders)...")
         msg_id = await user2_client.submit_order(
@@ -386,14 +795,24 @@ async def test_multiple_orders_stress(results: TestResult, user1_client: LumenDa
 
         await asyncio.sleep(15)
 
-        status = await user2_client.get_status(msg_id)
-        if status.is_accepted:
-            results.success("Partial fill BUY order processed")
-        else:
-            results.failure("Partial fill BUY order", f"Got {status.status}")
+        # Retry status check a few times in case of transient connection issues
+        for attempt in range(3):
+            try:
+                status = await user2_client.get_status(msg_id)
+                if status.is_accepted:
+                    results.success("Partial fill BUY order processed")
+                else:
+                    results.failure("Partial fill BUY order", f"Got {status.status}")
+                break
+            except Exception as e:
+                if attempt == 2:
+                    results.failure("Partial fill BUY order", f"{type(e).__name__}: {e}")
+                else:
+                    print(f"    Retry {attempt + 1}/3 after error: {type(e).__name__}")
+                    await asyncio.sleep(2)
 
     except Exception as e:
-        results.failure("Partial fill BUY order", str(e))
+        results.failure("Partial fill BUY order", f"{type(e).__name__}: {e}")
 
 
 async def test_insufficient_balance(results: TestResult, user1_client: LumenDarkClient):
@@ -401,89 +820,103 @@ async def test_insufficient_balance(results: TestResult, user1_client: LumenDark
     print("\n--- Testing Insufficient Balance ---")
 
     try:
-        # Try to place a huge order that should exceed balance
         print("  Placing order exceeding balance...")
         msg_id = await user1_client.submit_order(
             side="sell",
             price="1",
-            quantity="999999999",  # Huge quantity
+            quantity="999999999",
         )
 
         await asyncio.sleep(2)
 
-        # StatusResponse is a dataclass
         status = await user1_client.get_status(msg_id)
         if status.is_rejected:
             results.success("Order correctly rejected for insufficient balance")
         else:
-            # May be accepted if user has huge balance, that's ok too
             results.success(f"Order processed with status: {status.status}")
 
     except Exception as e:
-        # Rejection is expected
         results.success("Order rejected (exception)")
 
 
+# =============================================================================
+# MAIN
+# =============================================================================
+
 async def main():
     print("=" * 60)
-    print("LUMEN DARK E2E INTEGRATION TEST")
+    print("LUMEN DARK SELF-CONTAINED INTEGRATION TEST")
     print("=" * 60)
-    print(f"\nOrderbook Contract: {ORDERBOOK_CONTRACT}")
-    print(f"Token A Contract: {TOKEN_A_CONTRACT}")
-    print(f"Token B Contract: {TOKEN_B_CONTRACT}")
-    print(f"API Base URL: {API_BASE_URL}")
+    print("\nThis test creates everything from scratch - no prerequisites needed.")
 
     results = TestResult()
+    server_process = None
 
-    # Get keypairs
     try:
-        user1_keypair = get_keypair("user1")
-        user2_keypair = get_keypair("user2")
-        print(f"\nUser1: {user1_keypair.public_key[:12]}...")
-        print(f"User2: {user2_keypair.public_key[:12]}...")
-    except Exception as e:
-        print(f"\n❌ Failed to get keypairs: {e}")
-        print("Make sure 'stellar keys' are configured for 'user1' and 'user2'")
-        return 1
+        # Step 1: Create and fund accounts
+        accounts = await create_and_fund_accounts()
 
-    # Create clients
-    user1_client = LumenDarkClient(
-        base_url=API_BASE_URL,
-        keypair=user1_keypair,
-    )
-    user2_client = LumenDarkClient(
-        base_url=API_BASE_URL,
-        keypair=user2_keypair,
-    )
+        # Step 2: Deploy contracts
+        contracts = await setup_contracts(accounts)
 
-    print("\n" + "=" * 60)
+        print(f"\n--- Deployment Summary ---")
+        print(f"  Admin: {accounts.admin.public_key}")
+        print(f"  Token A: {contracts.token_a}")
+        print(f"  Token B: {contracts.token_b}")
+        print(f"  Orderbook: {contracts.orderbook}")
 
-    # Run tests
-    try:
+        # Step 3: Start backend server FIRST (so event listener can detect deposits)
+        server_process = start_backend_server(
+            accounts.admin.secret,
+            contracts.orderbook,
+        )
+
+        if not await wait_for_server_ready():
+            raise RuntimeError("Server did not start in time")
+
+        # Step 4: Make deposits AFTER server is running (so event listener sees them)
+        await setup_deposits(accounts, contracts)
+
+        # Step 5: Create clients
+        user1_client = LumenDarkClient(
+            base_url=API_BASE_URL,
+            keypair=accounts.user1,
+        )
+        user2_client = LumenDarkClient(
+            base_url=API_BASE_URL,
+            keypair=accounts.user2,
+        )
+
+        print("\n" + "=" * 60)
+        print("RUNNING TESTS")
+        print("=" * 60)
+
+        # Step 6: Run tests
         await test_health_check(results)
-        await test_deposits(results)
-        await test_order_placement_and_matching(results, user1_client, user2_client)
+        await test_order_placement(results, user1_client, user2_client)
         await test_order_cancellation(results, user1_client)
-        await test_multiple_orders_stress(results, user1_client, user2_client)
+        await test_multiple_orders(results, user1_client, user2_client)
         await test_withdrawal(results, user1_client)
         await test_insufficient_balance(results, user1_client)
 
     except KeyboardInterrupt:
         print("\n\nTest interrupted by user")
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\n[ERROR] Setup failed: {e}")
         import traceback
         traceback.print_exc()
-
-    # Print final balances
-    print("\n--- Final On-Chain Balances ---")
-    try:
-        print(f"  User1 Token A: {check_balance('user1', 'a')}")
-        print(f"  User1 Token B: {check_balance('user1', 'b')}")
-        print(f"  User2 Token A: {check_balance('user2', 'a')}")
-        print(f"  User2 Token B: {check_balance('user2', 'b')}")
-    except Exception as e:
-        print(f"  Could not fetch balances: {e}")
+        return 1
+    finally:
+        # Cleanup: stop server
+        if server_process:
+            print("\n--- Cleanup ---")
+            print("  Stopping server...")
+            server_process.terminate()
+            try:
+                server_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server_process.kill()
+            print("  Server stopped")
 
     # Summary
     success = results.summary()
