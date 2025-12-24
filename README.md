@@ -59,16 +59,6 @@ flowchart TB
 - **Orders**: User → API → Matching engine → Settlement transaction → Contract
 - **Withdrawals**: User → API → Withdrawal transaction → Contract transfers tokens back
 
-## Testnet Deployment
-
-The following contracts are deployed on Stellar Testnet:
-
-| Contract | Address |
-|----------|---------|
-| Orderbook | `CDNTW7OWJF7LYWERWLQMUUCUIR5Q4XMFSXCHALRS3V3SN5KRDSCJT2DY` |
-| Token A | `CCZXVH2AJO3X3ZIUXSN2VR5I3TZ4MNDUAI3JYDMTPOLXMCOOIVUMNKFW` |
-| Token B | `CDRASGTVJWOQTWCXNXD2YHIHHK2BHUONJMQHHWE25HQMFONWBL4XCYE3` |
-
 ## Quick Start
 
 ### Prerequisites
