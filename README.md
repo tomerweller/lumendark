@@ -14,54 +14,50 @@ Lumen Dark is a decentralized dark pool that enables private trading of Stellar-
 
 ## Architecture
 
-```
-                                    USERS
-                                      │
-                 ┌────────────────────┼────────────────────┐
-                 │                    │                    │
-                 ▼                    ▼                    ▼
-           ┌──────────┐         ┌──────────┐         ┌──────────┐
-           │ deposit()│         │ Signed   │         │ Signed   │
-           │ on-chain │         │ Orders   │         │Withdrawals
-           └────┬─────┘         └────┬─────┘         └────┬─────┘
-                │                    │                    │
-    ════════════╪════════════════════╪════════════════════╪════════════
-    STELLAR     │                    │                    │
-    NETWORK     ▼               ─────┼────────────────────┼─────
-           ┌─────────┐          │    │      BACKEND       │    │
-           │Orderbook│          │    ▼                    ▼    │
-           │Contract │◄─────────│──────────────────────────────│
-           └────┬────┘ settle() │  ┌──────────────────────┐    │
-                │    withdraw() │  │     HTTP API         │    │
-    ════════════╪═══════════════│  │  POST /orders        │    │
-                │               │  │  POST /withdrawals   │    │
-                │  Events       │  └──────────┬───────────┘    │
-                ▼               │             │                │
-           ┌─────────┐          │             ▼                │
-           │ Event   │          │  ┌──────────────────────┐    │
-           │ Listener│──────────┼─▶│   Main Executor      │    │
-           └─────────┘          │  │  ┌────────┬────────┐ │    │
-                                │  │  │Balances│Orders  │ │    │
-                                │  │  └────────┴────────┘ │    │
-                                │  │         │            │    │
-                                │  │         ▼            │    │
-                                │  │  ┌────────────┐      │    │
-                                │  │  │  Matching  │      │    │
-                                │  │  │   Engine   │      │    │
-                                │  │  └─────┬──────┘      │    │
-                                │  └────────┼─────────────┘    │
-                                │           ▼                  │
-                                │  ┌──────────────────────┐    │
-                                │  │ Outgoing Processor   │────┘
-                                │  │ (settle/withdraw txs)│
-                                │  └──────────────────────┘
-                                └──────────────────────────────
+```mermaid
+flowchart TB
+    subgraph Users
+        U1[User]
+    end
+
+    subgraph Stellar["Stellar Network"]
+        Contract[Orderbook Contract]
+    end
+
+    subgraph Backend
+        API[HTTP API]
+        Executor[Main Executor]
+        Balances[(Balances)]
+        OrderBook[(Order Book)]
+        Matching[Matching Engine]
+        Outgoing[Outgoing Processor]
+        Events[Event Listener]
+    end
+
+    %% Deposit flow
+    U1 -->|"1. deposit()"| Contract
+    Contract -.->|"2. emit event"| Events
+    Events -->|"3. credit balance"| Executor
+
+    %% Order flow
+    U1 -->|"POST /orders"| API
+    API --> Executor
+    Executor --> Balances
+    Executor --> OrderBook
+    Executor --> Matching
+    Matching --> Outgoing
+
+    %% Settlement flow
+    Outgoing -->|"settle() / withdraw()"| Contract
+
+    %% Withdrawal flow
+    U1 -->|"POST /withdrawals"| API
 ```
 
 **Flow Summary:**
-- **Deposits**: User → Contract → Event → Backend credits balance
-- **Orders**: User → API → Matching → Settlement tx → Contract
-- **Withdrawals**: User → API → Withdrawal tx → Contract → User
+- **Deposits**: User calls `deposit()` on contract → Event emitted → Backend credits balance
+- **Orders**: User → API → Matching engine → Settlement transaction → Contract
+- **Withdrawals**: User → API → Withdrawal transaction → Contract transfers tokens back
 
 ## Testnet Deployment
 
