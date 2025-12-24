@@ -29,7 +29,6 @@ flowchart TB
         Executor[Main Executor]
         Balances[(Balances)]
         OrderBook[(Order Book)]
-        Matching[Matching Engine]
         Outgoing[Outgoing Processor]
         Events[Event Listener]
     end
@@ -41,11 +40,10 @@ flowchart TB
 
     %% Order flow
     U1 -->|"POST /orders"| API
-    API --> Executor
+    API --> |"orders/cancels/withdraws"| Executor
     Executor --> Balances
     Executor --> OrderBook
-    Executor --> Matching
-    Matching --> Outgoing
+    Executor --> Outgoing
 
     %% Settlement flow
     Outgoing -->|"settle() / withdraw()"| Contract
